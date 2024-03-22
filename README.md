@@ -1,0 +1,9 @@
+# Ratify
+
+Ratify is a tool for signing and verification of files and directory structures. It is an alternative to tools like `cfv`.
+
+# Installation
+
+```
+$ cargo install ratify
+```
