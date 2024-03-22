@@ -1,0 +1,4 @@
+/target
+tests/***/*.pyc
+*.pyc
+.venv
