@@ -2,12 +2,9 @@ use algo::Algorithm;
 use anyhow::Context;
 use clap::{Parser, Subcommand};
 use itertools::Itertools;
-use std::{
-    collections::HashSet,
-    io::{stdout, Write},
-    path::PathBuf,
-};
+use std::{collections::HashSet, path::PathBuf};
 use strum::{EnumString, IntoEnumIterator};
+use termcolor::{StandardStream, WriteColor};
 use tracing_subscriber::{filter::LevelFilter, EnvFilter};
 use utils::Canonicalizeable;
 
@@ -158,18 +155,18 @@ fn verify_catalog(params: VerifyParams) -> anyhow::Result<()> {
     all_paths.remove(&params.path.try_canonicalize()?);
     report.update_unknown(all_paths);
 
-    let mut report_writer: Box<dyn Write> = if let Some(path) = &params.report_filename {
+    let mut report_writer: Box<dyn WriteColor> = if let Some(path) = &params.report_filename {
         log::debug!("Opening report file {:?} for writing...", path);
-        Box::new(
+        Box::new(termcolor::NoColor::new(
             std::fs::OpenOptions::new()
                 .create_new(true)
                 .write(true)
                 .truncate(true)
                 .open(path)
                 .context("Failed opening report file")?,
-        )
+        ))
     } else {
-        Box::new(stdout())
+        Box::new(StandardStream::stdout(termcolor::ColorChoice::Auto))
     };
 
     match params.report_type {

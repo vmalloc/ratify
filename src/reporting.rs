@@ -1,11 +1,11 @@
 use std::{
     collections::HashSet,
-    io::Write,
     path::{Path, PathBuf},
     sync::Arc,
 };
 
 use anyhow::Context;
+use termcolor::{Color, ColorSpec};
 
 use crate::utils::CanonicalPath;
 
@@ -50,8 +50,21 @@ pub trait ReportFormatter {
         &mut self,
         report: &VerificationReport,
         start_time: std::time::Instant,
-        writer: &mut dyn Write,
+        writer: &mut dyn termcolor::WriteColor,
     ) -> anyhow::Result<()>;
+}
+
+fn output_short_status_line(
+    writer: &mut dyn termcolor::WriteColor,
+    entry: &ReportEntry,
+    short_status: &str,
+    color: Color,
+) -> anyhow::Result<()> {
+    writer.set_color(ColorSpec::new().set_fg(Some(color)))?;
+    write!(writer, "* {}", short_status)?;
+    writer.reset()?;
+    writeln!(writer, " {:?}", entry.path())?;
+    Ok(())
 }
 
 pub struct PlainFormatter;
@@ -61,7 +74,7 @@ impl ReportFormatter for PlainFormatter {
         &mut self,
         report: &VerificationReport,
         start_time: std::time::Instant,
-        writer: &mut dyn Write,
+        writer: &mut dyn termcolor::WriteColor,
     ) -> anyhow::Result<()> {
         let mut num_ok = 0;
         let mut num_failed = 0;
@@ -74,26 +87,28 @@ impl ReportFormatter for PlainFormatter {
                     num_ok += 1;
                 }
                 EntryStatus::VerificationError => {
-                    writeln!(writer, "* {:?} failed verification", entry.path())?;
+                    output_short_status_line(writer, entry, "FAILED ", Color::Red)?;
                     num_failed += 1
                 }
                 EntryStatus::Missing => {
-                    writeln!(writer, "* {:?} missing", entry.path())?;
+                    output_short_status_line(writer, entry, "MISSING", Color::Red)?;
                     num_missing += 1
                 }
                 EntryStatus::Unknown => {
-                    writeln!(writer, "* {:?} is unknown", entry.path())?;
+                    output_short_status_line(writer, entry, "UNKNOWN", Color::Yellow)?;
                 }
             }
         }
         writeln!(writer, "{} entries checked", report.entries.len())?;
         writeln!(writer, "{num_ok} OK")?;
+        writer.set_color(ColorSpec::new().set_fg(Some(Color::Red)))?;
         if num_failed > 0 {
-            writeln!(writer, "{num_failed} entries failed verification")?;
+            writeln!(writer, "{num_failed} Failed verification")?;
         }
         if num_missing > 0 {
-            writeln!(writer, "{num_missing} entries failed verification")?;
+            writeln!(writer, "{num_missing} Missing")?;
         }
+        writer.reset()?;
         let end = std::time::Instant::now();
         let duration = end.duration_since(start_time);
         let mut bw = (total_bytes as f64) / duration.as_secs_f64();
@@ -101,12 +116,21 @@ impl ReportFormatter for PlainFormatter {
             bw = 0.0;
         }
 
+        writer.set_color(
+            ColorSpec::new()
+                .set_fg(Some(Color::Black))
+                .set_intense(true),
+        )?;
         writeln!(
             writer,
             "{} done in {duration:?} ({:.02} MB/sec)",
             human_bytes::human_bytes(total_bytes as f64),
             bw / 1_000_000.0,
         )?;
+
+        writer.reset()?;
+        writeln!(writer)?;
+
         Ok(())
     }
 }
@@ -118,7 +142,7 @@ impl ReportFormatter for JsonFormatter {
         &mut self,
         report: &VerificationReport,
         _start_time: std::time::Instant,
-        writer: &mut dyn Write,
+        writer: &mut dyn termcolor::WriteColor,
     ) -> anyhow::Result<()> {
         let mut failed = Vec::new();
         for entry in report.entries.iter() {

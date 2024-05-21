@@ -559,6 +559,7 @@ dependencies = [
  "sha1",
  "sha2",
  "strum",
+ "termcolor",
  "tracing-subscriber",
  "walkdir",
 ]
@@ -774,6 +775,15 @@ dependencies = [
  "redox_syscall",
  "rustix",
  "windows-sys 0.48.0",
+]
+
+[[package]]
+name = "termcolor"
+version = "1.4.1"
+source = "registry+https://github.com/rust-lang/crates.io-index"
+checksum = "06794f8f6c5c898b3275aebefa6b8a1cb24cd2c6c79397ab15774837a0bc5755"
+dependencies = [
+ "winapi-util",
 ]
 
 [[package]]
