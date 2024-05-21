@@ -56,18 +56,22 @@ struct VerifyParams {
 
 #[derive(Subcommand)]
 enum Command {
+    /// Creates a new signature catalog for this directory, signing its contents recursively
     Create {
         #[clap(flatten)]
         params: CreateParams,
     },
+    /// Adds entries for unknown files to an already-existing catalog
     Append {
         #[clap(flatten)]
         params: AppendParams,
     },
+    /// Verifies an existing signature catalog against the actual directory contents
     Verify {
         #[clap(flatten)]
         params: VerifyParams,
     },
+    /// Lists available signature (hashing) algorithms
     ListAlgos,
 }
 
