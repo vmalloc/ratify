@@ -21,3 +21,7 @@ This generates a DIRNAME.sha1 in the requested directory, which can later be ver
 ```
 $ ratify test .
 ```
+
+Ratify warns about new files not found in the catalog, and allows you to add them using `ratify append` (note that this does not modify signatures for existing entries).
+
+The catalog created by Ratify is compatible with `cfv`, so Ratify can be used to verify `cfv`-created signatures as well
