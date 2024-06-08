@@ -212,7 +212,7 @@ impl Entry {
             Err(e) => {
                 if let Some(e) = e.downcast_ref::<std::io::Error>() {
                     if e.kind() == std::io::ErrorKind::NotFound {
-                        log::error!("{:?} is missing!", self.path);
+                        log::info!("{:?} is missing!", self.path);
                         return Ok(crate::reporting::ReportEntry::new(
                             self.path.clone(),
                             0,

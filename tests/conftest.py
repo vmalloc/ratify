@@ -57,7 +57,7 @@ class Sigfile:
     def __init__(self, path: pathlib.Path):
         self.path = path
 
-    def entries(self) -> [Entry]:
+    def entries(self) -> list[Entry]:
         with self.path.open() as f:
             entries = []
             for line in f:

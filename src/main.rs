@@ -10,6 +10,7 @@ use utils::Canonicalizeable;
 
 mod algo;
 mod catalog;
+mod errors;
 mod parallel;
 mod reporting;
 mod utils;
@@ -142,7 +143,7 @@ fn verify_catalog(params: VerifyParams) -> anyhow::Result<()> {
     let mut report = crate::parallel::for_each(catalog.into_iter(), |entry| {
         entry
             .verify(algo)
-            .inspect_err(|e| log::error!("Failed checksum for {:?}: {e:?}", entry.path()))
+            .inspect_err(|e| log::info!("Failed checksum for {:?}: {e:?}", entry.path()))
     })
     .collect::<anyhow::Result<reporting::VerificationReport>>()?;
 
@@ -190,14 +191,31 @@ fn append_catalog(params: AppendParams) -> anyhow::Result<()> {
     catalog.write_signature_file(true)
 }
 
-fn main() -> anyhow::Result<()> {
+fn main() {
+    if let Err(e) = entry_point() {
+        match e.downcast_ref() {
+            Some(
+                crate::errors::Error::FailedEntriesFound
+                | crate::errors::Error::MissingEntriesFound,
+            ) => {}
+            _ => {
+                log::error!("Error occurred: {e:?}");
+            }
+        }
+
+        std::process::exit(-1);
+    }
+}
+
+fn entry_point() -> anyhow::Result<()> {
     let opts = Opts::parse();
 
     tracing_subscriber::fmt()
         .with_env_filter(
             EnvFilter::default().add_directive(
                 match opts.verbosity {
-                    0 => LevelFilter::INFO,
+                    0 => LevelFilter::ERROR,
+                    1 => LevelFilter::INFO,
                     _ => LevelFilter::DEBUG,
                 }
                 .into(),

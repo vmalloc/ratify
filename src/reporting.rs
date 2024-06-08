@@ -58,12 +58,17 @@ fn output_short_status_line(
     writer: &mut dyn termcolor::WriteColor,
     entry: &ReportEntry,
     short_status: &str,
-    color: Color,
+    color_spec: Option<&ColorSpec>,
 ) -> anyhow::Result<()> {
-    writer.set_color(ColorSpec::new().set_fg(Some(color)))?;
-    write!(writer, "* {}", short_status)?;
+    write!(writer, "[")?;
+
+    if let Some(spec) = &color_spec {
+        writer.set_color(spec)?;
+    }
+
+    write!(writer, "{}", &short_status[..4])?;
     writer.reset()?;
-    writeln!(writer, " {:?}", entry.path())?;
+    writeln!(writer, "] {:?}", entry.path())?;
     Ok(())
 }
 
@@ -87,15 +92,34 @@ impl ReportFormatter for PlainFormatter {
                     num_ok += 1;
                 }
                 EntryStatus::VerificationError => {
-                    output_short_status_line(writer, entry, "FAILED ", Color::Red)?;
+                    output_short_status_line(
+                        writer,
+                        entry,
+                        "FAILED ",
+                        Some(
+                            ColorSpec::new()
+                                .set_fg(Some(Color::Black))
+                                .set_bg(Some(Color::Red)),
+                        ),
+                    )?;
                     num_failed += 1
                 }
                 EntryStatus::Missing => {
-                    output_short_status_line(writer, entry, "MISSING", Color::Red)?;
+                    output_short_status_line(
+                        writer,
+                        entry,
+                        "MISSING",
+                        Some(ColorSpec::new().set_fg(Some(Color::Red))),
+                    )?;
                     num_missing += 1
                 }
                 EntryStatus::Unknown => {
-                    output_short_status_line(writer, entry, "UNKNOWN", Color::Yellow)?;
+                    output_short_status_line(
+                        writer,
+                        entry,
+                        "UNKNOWN",
+                        Some(ColorSpec::new().set_fg(Some(Color::Yellow))),
+                    )?;
                 }
             }
         }
@@ -198,7 +222,7 @@ impl VerificationReport {
         for entry in self.entries.iter() {
             match &entry.status {
                 EntryStatus::VerificationError => {
-                    anyhow::bail!("Failed entries found");
+                    anyhow::bail!(crate::errors::Error::FailedEntriesFound);
                 }
                 EntryStatus::Missing => {
                     has_missing = true;
@@ -210,9 +234,9 @@ impl VerificationReport {
             }
         }
         if has_missing {
-            anyhow::bail!("Missing entries found");
+            anyhow::bail!(crate::errors::Error::MissingEntriesFound);
         } else if has_unknown {
-            anyhow::bail!("Unknown entries found");
+            anyhow::bail!(crate::errors::Error::UnknownEntriesFound);
         }
         Ok(())
     }
