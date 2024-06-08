@@ -1,11 +1,11 @@
 #[derive(thiserror::Error, Debug, PartialEq, Eq)]
 pub enum Error {
     #[error("Failed entries found")]
-    FailedEntriesFound,
+    Failed,
 
     #[error("Missing entries found")]
-    MissingEntriesFound,
+    Missing,
 
     #[error("Unknown entries found")]
-    UnknownEntriesFound,
+    Unknown,
 }

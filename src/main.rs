@@ -18,7 +18,7 @@ mod utils;
 use reporting::ReportFormatter;
 
 #[derive(Parser)]
-struct CreateParams {
+struct SignParams {
     /// algorithm to use for hashing (run list-algos to view available algorithms)
     #[clap(short = 'a', long)]
     algo: Algorithm,
@@ -35,7 +35,7 @@ struct AppendParams {
 }
 
 #[derive(Parser)]
-struct VerifyParams {
+struct TestParams {
     /// Kind of report to generate (plain/json)
     #[clap(long = "report", default_value = "plain")]
     report_type: ReportType,
@@ -55,9 +55,9 @@ struct VerifyParams {
 #[derive(Subcommand)]
 enum Command {
     /// Creates a new signature catalog for this directory, signing its contents recursively
-    Create {
+    Sign {
         #[clap(flatten)]
-        params: CreateParams,
+        params: SignParams,
     },
     /// Adds entries for unknown files to an already-existing catalog
     Append {
@@ -65,9 +65,9 @@ enum Command {
         params: AppendParams,
     },
     /// Verifies an existing signature catalog against the actual directory contents
-    Verify {
+    Test {
         #[clap(flatten)]
-        params: VerifyParams,
+        params: TestParams,
     },
     /// Lists available signature (hashing) algorithms
     ListAlgos,
@@ -106,7 +106,7 @@ fn checksum_entry(
     Ok((size, relative_filename, hash))
 }
 
-fn create_catalog(params: CreateParams) -> anyhow::Result<()> {
+fn create_catalog(params: SignParams) -> anyhow::Result<()> {
     let directory = catalog::Directory::new(&params.path)?;
 
     let mut catalog = directory.empty_catalog(params.algo);
@@ -116,7 +116,7 @@ fn create_catalog(params: CreateParams) -> anyhow::Result<()> {
     catalog.write_signature_file(false)
 }
 
-fn verify_catalog(params: VerifyParams) -> anyhow::Result<()> {
+fn test_catalog(params: TestParams) -> anyhow::Result<()> {
     let start = std::time::Instant::now();
     let directory = catalog::Directory::new(&params.path)?;
 
@@ -167,7 +167,7 @@ fn verify_catalog(params: VerifyParams) -> anyhow::Result<()> {
                 .context("Failed opening report file")?,
         ))
     } else {
-        Box::new(StandardStream::stdout(termcolor::ColorChoice::Auto))
+        Box::new(StandardStream::stderr(termcolor::ColorChoice::Auto))
     };
 
     match params.report_type {
@@ -195,9 +195,12 @@ fn main() {
     if let Err(e) = entry_point() {
         match e.downcast_ref() {
             Some(
-                crate::errors::Error::FailedEntriesFound
-                | crate::errors::Error::MissingEntriesFound,
-            ) => {}
+                crate::errors::Error::Failed
+                | crate::errors::Error::Missing
+                | crate::errors::Error::Unknown,
+            ) => {
+                eprintln!("{}", e);
+            }
             _ => {
                 log::error!("Error occurred: {e:?}");
             }
@@ -225,9 +228,9 @@ fn entry_point() -> anyhow::Result<()> {
         .init();
 
     match opts.command {
-        Command::Create { params } => create_catalog(params),
+        Command::Sign { params } => create_catalog(params),
         Command::Append { params } => append_catalog(params),
-        Command::Verify { params } => verify_catalog(params),
+        Command::Test { params } => test_catalog(params),
         Command::ListAlgos => {
             for algo in Algorithm::iter() {
                 println!("{algo}");

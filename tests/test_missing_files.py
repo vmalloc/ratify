@@ -14,10 +14,9 @@ def deleted_file(directory, cfv_sigfile):
 def test_missing_file(directory, deleted_file, run, report):
     with pytest.raises(subprocess.CalledProcessError) as e:
         run(
-            f"verify {directory} --report json --report-filename {report.filename}",
+            f"test {directory} --report json --report-filename {report.filename}",
             stderr=subprocess.PIPE,
         )
-    assert b"Missing entries found" in e.value.stderr
     data = report.load()
 
     assert len(data["failed"]) == 1

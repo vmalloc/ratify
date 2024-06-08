@@ -76,7 +76,7 @@ class Sigfile:
         assert len(entries) == len(expected_entries)
         return entries
 
-    def verify(self):
+    def cfv_verify(self):
         subprocess.check_call("cfv", cwd=self.path.parent)
 
 

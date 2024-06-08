@@ -17,7 +17,7 @@ def corruption(directory, cfv_sigfile):
 def test_cfv_verify(directory, corruption, run, report):
     with pytest.raises(subprocess.CalledProcessError) as e:
         run(
-            f"verify {directory} --report json --report-filename {report.filename}",
+            f"test {directory} --report json --report-filename {report.filename}",
             stderr=subprocess.PIPE,
         )
     assert b"Failed entries found" in e.value.stderr

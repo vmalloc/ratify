@@ -84,6 +84,7 @@ impl ReportFormatter for PlainFormatter {
         let mut num_ok = 0;
         let mut num_failed = 0;
         let mut num_missing = 0;
+        let mut num_unknown = 0;
         let mut total_bytes = 0;
         for entry in report.entries.iter() {
             total_bytes += entry.processed_size;
@@ -120,6 +121,7 @@ impl ReportFormatter for PlainFormatter {
                         "UNKNOWN",
                         Some(ColorSpec::new().set_fg(Some(Color::Yellow))),
                     )?;
+                    num_unknown += 1;
                 }
             }
         }
@@ -132,6 +134,12 @@ impl ReportFormatter for PlainFormatter {
         if num_missing > 0 {
             writeln!(writer, "{num_missing} Missing")?;
         }
+
+        writer.set_color(ColorSpec::new().set_fg(Some(Color::Yellow)))?;
+        if num_unknown > 0 {
+            writeln!(writer, "{num_unknown} Unknown")?;
+        }
+
         writer.reset()?;
         let end = std::time::Instant::now();
         let duration = end.duration_since(start_time);
@@ -222,7 +230,7 @@ impl VerificationReport {
         for entry in self.entries.iter() {
             match &entry.status {
                 EntryStatus::VerificationError => {
-                    anyhow::bail!(crate::errors::Error::FailedEntriesFound);
+                    anyhow::bail!(crate::errors::Error::Failed);
                 }
                 EntryStatus::Missing => {
                     has_missing = true;
@@ -234,9 +242,9 @@ impl VerificationReport {
             }
         }
         if has_missing {
-            anyhow::bail!(crate::errors::Error::MissingEntriesFound);
+            anyhow::bail!(crate::errors::Error::Missing);
         } else if has_unknown {
-            anyhow::bail!(crate::errors::Error::UnknownEntriesFound);
+            anyhow::bail!(crate::errors::Error::Unknown);
         }
         Ok(())
     }
