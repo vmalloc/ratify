@@ -140,12 +140,18 @@ fn test_catalog(params: TestParams) -> anyhow::Result<()> {
 
     let algo = catalog.metadata().algo();
 
+    let bar = indicatif::ProgressBar::new(catalog.len().try_into().unwrap());
+
     let mut report = crate::parallel::for_each(catalog.into_iter(), |entry| {
-        entry
+        let res = entry
             .verify(algo)
-            .inspect_err(|e| log::info!("Failed checksum for {:?}: {e:?}", entry.path()))
+            .inspect_err(|e| log::info!("Failed checksum for {:?}: {e:?}", entry.path()));
+        bar.inc(1);
+        res
     })
     .collect::<anyhow::Result<reporting::VerificationReport>>()?;
+
+    drop(bar);
 
     let mut all_paths = all_paths_thread
         .join()
