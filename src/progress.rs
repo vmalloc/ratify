@@ -1,14 +1,12 @@
-use std::sync::atomic::AtomicU64;
+use std::sync::{atomic::AtomicU64, Arc};
 
 use indicatif::{HumanBytes, ProgressDrawTarget, ProgressStyle};
 
-const SIZE_UPDATE_FREQ: u64 = 100;
+const SIZE_UPDATE_FREQ: std::time::Duration = std::time::Duration::from_secs(3);
 
 pub struct ProgressBar {
-    bar: indicatif::ProgressBar,
-    size: AtomicU64,
-    count: AtomicU64,
-    start_time: std::time::Instant,
+    bar: Arc<indicatif::ProgressBar>,
+    size: Arc<AtomicU64>,
 }
 
 impl ProgressBar {
@@ -21,39 +19,45 @@ impl ProgressBar {
             )
             .unwrap(),
         );
-        Self {
-            bar,
-            size: AtomicU64::default(),
-            count: AtomicU64::default(),
-            start_time: std::time::Instant::now(),
-        }
+
+        let bar = Arc::new(bar);
+        let size = Arc::new(AtomicU64::default());
+
+        let bar_weak = Arc::downgrade(&bar);
+        let size_weak = Arc::downgrade(&size);
+
+        std::thread::spawn(move || {
+            let mut last_update_time = std::time::Instant::now();
+            let mut last_size = 0;
+            loop {
+                std::thread::sleep(SIZE_UPDATE_FREQ);
+
+                let Some(bar) = bar_weak.upgrade() else { break };
+                let Some(size) = size_weak.upgrade() else {
+                    break;
+                };
+
+                let now = std::time::Instant::now();
+                let current_size = size.load(std::sync::atomic::Ordering::Relaxed);
+                let size_diff = current_size - last_size;
+                let time_diff = now.duration_since(last_update_time).as_secs();
+
+                bar.set_message(format!(
+                    "{}/s",
+                    HumanBytes(size_diff.checked_div(time_diff).unwrap_or_default())
+                ));
+                last_update_time = now;
+                last_size = current_size;
+            }
+        });
+
+        Self { bar, size }
     }
 
     pub fn notify_record_processed(&self, record_size: Option<u64>) {
         self.bar.inc(1);
         let record_size = record_size.unwrap_or_default();
-        let size = self
-            .size
-            .fetch_add(record_size, std::sync::atomic::Ordering::Relaxed)
-            + record_size;
-
-        let count = self
-            .count
-            .fetch_add(1, std::sync::atomic::Ordering::Relaxed)
-            + 1;
-
-        if count % SIZE_UPDATE_FREQ == 0 {
-            self.bar.set_message(format!(
-                "{}/s",
-                HumanBytes(
-                    size.checked_div(
-                        std::time::Instant::now()
-                            .duration_since(self.start_time)
-                            .as_secs()
-                    )
-                    .unwrap_or_default()
-                )
-            ));
-        }
+        self.size
+            .fetch_add(record_size, std::sync::atomic::Ordering::Relaxed);
     }
 }
