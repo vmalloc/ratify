@@ -43,6 +43,10 @@ impl ReportEntry {
     pub fn canonical_path(&self) -> &CanonicalPath<PathBuf> {
         &self.path
     }
+
+    pub fn processed_size(&self) -> u64 {
+        self.processed_size
+    }
 }
 
 pub trait ReportFormatter {

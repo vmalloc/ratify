@@ -12,6 +12,7 @@ mod algo;
 mod catalog;
 mod errors;
 mod parallel;
+mod progress;
 mod reporting;
 mod utils;
 
@@ -140,13 +141,13 @@ fn test_catalog(params: TestParams) -> anyhow::Result<()> {
 
     let algo = catalog.metadata().algo();
 
-    let bar = indicatif::ProgressBar::new(catalog.len().try_into().unwrap());
+    let bar = crate::progress::ProgressBar::new(catalog.len());
 
     let mut report = crate::parallel::for_each(catalog.into_iter(), |entry| {
         let res = entry
             .verify(algo)
             .inspect_err(|e| log::info!("Failed checksum for {:?}: {e:?}", entry.path()));
-        bar.inc(1);
+        bar.notify_record_processed(res.as_ref().map(|r| r.processed_size()).ok());
         res
     })
     .collect::<anyhow::Result<reporting::VerificationReport>>()?;
