@@ -57,7 +57,7 @@ impl Directory {
                 );
             }
         }
-        let metadata = self.catalog_metadata(algo);
+        let metadata = Arc::new(self.catalog_metadata(algo));
 
         Ok(Catalog {
             metadata,
@@ -101,7 +101,7 @@ impl Directory {
     }
 
     pub(crate) fn empty_catalog(self, algo: Algorithm) -> Catalog {
-        let metadata = self.catalog_metadata(algo);
+        let metadata = Arc::new(self.catalog_metadata(algo));
         Catalog {
             directory: self,
             entries: Default::default(),
@@ -129,47 +129,63 @@ pub struct Catalog {
     directory: Directory,
 
     entries: BTreeMap<String, Vec<u8>>,
-    metadata: CatalogMetadata,
+    metadata: Arc<CatalogMetadata>,
 }
 
 impl Catalog {
     pub fn populate(&mut self) -> anyhow::Result<()> {
-        let mut entries = BTreeMap::new();
+        let mut new_entries = BTreeMap::new();
+        let mut old_entries = Arc::new(std::mem::take(&mut self.entries));
+
         let iterator = walkdir::WalkDir::new(self.directory.path())
             .into_iter()
             .filter_ok(|entry| !entry.path().is_dir())
-            .filter_ok(|entry| entry.path() != self.metadata.signature_file_path.as_path())
-            .map(|maybe_entry| {
-                maybe_entry
-                    .context("Failed reading entry")
-                    .and_then(|entry| {
-                        let relative_path =
-                            pathdiff::diff_paths(entry.path(), self.directory.path()).ok_or_else(
-                                || {
+            .filter_ok({
+                let metadata = self.metadata.clone();
+                move |entry| entry.path() != metadata.signature_file_path.as_path()
+            })
+            .map({
+                let directory_path = self.directory.path().to_owned();
+                move |maybe_entry| {
+                    maybe_entry.context("Failed reading entry").and_then({
+                        |entry| {
+                            let relative_path = pathdiff::diff_paths(entry.path(), &directory_path)
+                                .ok_or_else(|| {
                                     anyhow::format_err!(
                                         "Unable to get relative path for {:?}",
                                         entry.path()
                                     )
-                                },
-                            )?;
+                                })?;
 
-                        Ok((entry, relative_path.to_string_lossy().to_string()))
+                            Ok((entry, relative_path.to_string_lossy().to_string()))
+                        }
                     })
+                }
             })
-            .filter_ok(|(_, relpath)| !self.entries.contains_key(relpath));
-        for result in crate::parallel::for_each(iterator, |res| {
+            .filter_ok({
+                let old_entries = old_entries.clone();
+                move |(_, relpath)| !old_entries.contains_key(relpath)
+            });
+        let metadata = self.metadata.clone();
+        for result in crate::parallel::for_each(iterator, move |res| {
             res.and_then(|(entry, relative_path)| {
-                checksum_entry(self.metadata.algo, entry, relative_path)
+                checksum_entry(metadata.algo, entry, relative_path)
             })
         }) {
             let (entry, relative_filename, signature) = result?;
-            let prev = entries.insert(relative_filename, signature);
+            let prev = new_entries.insert(relative_filename, signature);
             assert!(prev.is_none(), "Entry {:?} was already in catalog!", entry)
         }
+
+        assert!(self.entries.is_empty());
+        assert_eq!(Arc::strong_count(&old_entries), 1);
+        std::mem::swap(Arc::make_mut(&mut old_entries), &mut self.entries);
+        // now self.entries is back to what it used to be
+
         if self.entries.is_empty() {
-            std::mem::swap(&mut self.entries, &mut entries);
+            std::mem::swap(&mut self.entries, &mut new_entries);
         } else {
-            self.entries.extend(entries);
+            self.entries.extend(new_entries);
         }
 
         Ok(())

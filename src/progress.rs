@@ -4,6 +4,7 @@ use indicatif::{HumanBytes, ProgressDrawTarget, ProgressStyle};
 
 const SIZE_UPDATE_FREQ: std::time::Duration = std::time::Duration::from_secs(3);
 
+#[derive(Clone)]
 pub struct ProgressBar {
     bar: Arc<indicatif::ProgressBar>,
     size: Arc<AtomicU64>,
