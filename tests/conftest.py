@@ -99,14 +99,6 @@ class Algorithm:
         return Sigfile(path)
 
 
-class Sha1Algorithm(Algorithm):
-    pass
-
-
-class Md5Algorithm(Algorithm):
-    pass
-
-
 class Sha256Algorithm(Algorithm):
     pass
 
@@ -115,7 +107,11 @@ class Sha512Algorithm(Algorithm):
     pass
 
 
-_ALL_ALGOS = (Sha1Algorithm, Md5Algorithm, Sha256Algorithm, Sha512Algorithm)
+class Blake3Algorithm(Algorithm):
+    pass
+
+
+_ALL_ALGOS = (Sha256Algorithm, Sha512Algorithm, Blake3Algorithm)
 
 
 @pytest.fixture
