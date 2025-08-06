@@ -22,7 +22,7 @@ impl Algorithm {
     pub fn try_deduce_from_path(root: &Path) -> Option<Self> {
         let root_dir_name = root.file_name()?.to_string_lossy();
         Self::iter().find(|variant| {
-            let path = root.join(format!("{}.{}", root_dir_name, variant));
+            let path = root.join(format!("{root_dir_name}.{variant}"));
             log::debug!("Searching for {path:?}...");
             path.exists()
         })
