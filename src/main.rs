@@ -162,7 +162,7 @@ fn test_catalog(params: TestParams) -> anyhow::Result<()> {
     report.update_unknown(all_paths);
 
     let mut report_writer: Box<dyn WriteColor> = if let Some(path) = &params.report_filename {
-        log::debug!("Opening report file {:?} for writing...", path);
+        log::debug!("Opening report file {path:?} for writing...");
         Box::new(termcolor::NoColor::new(
             std::fs::OpenOptions::new()
                 .create_new(true)
@@ -204,7 +204,7 @@ fn main() {
                 | crate::errors::Error::Missing
                 | crate::errors::Error::Unknown,
             ) => {
-                eprintln!("{}", e);
+                eprintln!("{e}");
             }
             _ => {
                 log::error!("Error occurred: {e:?}");

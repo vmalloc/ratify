@@ -80,7 +80,7 @@ impl Directory {
             .file_name()
             .map(|x| x.to_string_lossy())
             .unwrap_or_else(|| "signatures".into());
-        format!("{}.{}", file_name, algo)
+        format!("{file_name}.{algo}")
     }
 
     pub fn path(&self) -> &Path {
@@ -174,7 +174,7 @@ impl Catalog {
         }) {
             let (entry, relative_filename, signature) = result?;
             let prev = new_entries.insert(relative_filename, signature);
-            assert!(prev.is_none(), "Entry {:?} was already in catalog!", entry)
+            assert!(prev.is_none(), "Entry {entry:?} was already in catalog!")
         }
 
         assert!(self.entries.is_empty());
@@ -206,7 +206,7 @@ impl Catalog {
 
         for (subpath, sig) in self.entries.iter() {
             let encoded = hex::encode(sig);
-            writeln!(&mut sigfile, "{} *{}", encoded, subpath)?;
+            writeln!(&mut sigfile, "{encoded} *{subpath}")?;
         }
 
         Ok(())
