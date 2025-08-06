@@ -266,6 +266,18 @@ impl Catalog {
         &self.metadata
     }
 
+    pub fn update_entry(&mut self, relative_path: &str, hash: Vec<u8>) {
+        self.entries.insert(relative_path.to_string(), hash);
+    }
+
+    pub fn remove_entry(&mut self, relative_path: &str) {
+        self.entries.remove(relative_path);
+    }
+
+    pub fn directory(&self) -> &Directory {
+        &self.directory
+    }
+
     pub(crate) fn into_iter(self) -> impl Iterator<Item = Entry> {
         let root_path = self.directory.path;
 

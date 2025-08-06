@@ -2,11 +2,11 @@ use algo::Algorithm;
 use anyhow::Context;
 use clap::{Parser, Subcommand};
 use itertools::Itertools;
-use std::{collections::HashSet, path::PathBuf};
+use std::{collections::HashSet, io::Write, path::PathBuf};
 use strum::{EnumString, IntoEnumIterator};
-use termcolor::{StandardStream, WriteColor};
+use termcolor::{Color, ColorSpec, StandardStream, WriteColor};
 use tracing_subscriber::{filter::LevelFilter, EnvFilter};
-use utils::Canonicalizeable;
+use utils::{read_single_char, Canonicalizeable};
 
 mod algo;
 mod catalog;
@@ -53,6 +53,16 @@ struct TestParams {
     path: PathBuf,
 }
 
+#[derive(Parser)]
+struct UpdateParams {
+    /// algorithm to use
+    #[clap(short = 'a', long)]
+    algo: Option<Algorithm>,
+
+    #[clap(default_value = ".")]
+    path: PathBuf,
+}
+
 #[derive(Subcommand)]
 enum Command {
     /// Creates a new signature catalog for this directory, signing its contents recursively
@@ -69,6 +79,11 @@ enum Command {
     Test {
         #[clap(flatten)]
         params: TestParams,
+    },
+    /// Interactively updates entries with verification discrepancies
+    Update {
+        #[clap(flatten)]
+        params: UpdateParams,
     },
     /// Lists available signature (hashing) algorithms
     ListAlgos,
@@ -107,20 +122,16 @@ fn checksum_entry(
     Ok((size, relative_filename, hash))
 }
 
-fn create_catalog(params: SignParams) -> anyhow::Result<()> {
-    let directory = catalog::Directory::new(&params.path)?;
-
-    let mut catalog = directory.empty_catalog(params.algo);
-
-    catalog.populate()?;
-
-    catalog.write_signature_file(false)
+struct Verification {
+    report: reporting::VerificationReport,
+    algo: Algorithm,
 }
 
-fn test_catalog(params: TestParams) -> anyhow::Result<()> {
-    let start = std::time::Instant::now();
-    let directory = catalog::Directory::new(&params.path)?;
-
+fn load_and_verify_catalog(
+    directory: catalog::Directory,
+    algo_param: Option<Algorithm>,
+    path_param: &PathBuf,
+) -> anyhow::Result<Verification> {
     let iterator = walkdir::WalkDir::new(directory.path());
     let all_paths_thread = std::thread::spawn(move || {
         iterator
@@ -135,10 +146,9 @@ fn test_catalog(params: TestParams) -> anyhow::Result<()> {
     });
 
     let catalog = directory
-        .load(params.algo)
+        .load(algo_param)
         .context("Failed loading directory")?;
     let catalog_filename = catalog.metadata().signature_file_path().clone();
-
     let algo = catalog.metadata().algo();
 
     let bar = crate::progress::ProgressBar::new(catalog.len());
@@ -158,8 +168,27 @@ fn test_catalog(params: TestParams) -> anyhow::Result<()> {
         .context("Failed listing all files in directory")?;
 
     all_paths.remove(&catalog_filename);
-    all_paths.remove(&params.path.try_canonicalize()?);
+    all_paths.remove(&path_param.try_canonicalize()?);
     report.update_unknown(all_paths);
+
+    Ok(Verification { report, algo })
+}
+
+fn create_catalog(params: SignParams) -> anyhow::Result<()> {
+    let directory = catalog::Directory::new(&params.path)?;
+
+    let mut catalog = directory.empty_catalog(params.algo);
+
+    catalog.populate()?;
+
+    catalog.write_signature_file(false)
+}
+
+fn test_catalog(params: TestParams) -> anyhow::Result<()> {
+    let start = std::time::Instant::now();
+    let directory = catalog::Directory::new(&params.path)?;
+
+    let report = load_and_verify_catalog(directory, params.algo, &params.path)?.report;
 
     let mut report_writer: Box<dyn WriteColor> = if let Some(path) = &params.report_filename {
         log::debug!("Opening report file {path:?} for writing...");
@@ -194,6 +223,243 @@ fn append_catalog(params: AppendParams) -> anyhow::Result<()> {
     catalog.populate()?;
 
     catalog.write_signature_file(true)
+}
+
+#[derive(Debug, Clone, PartialEq)]
+enum UpdateAction {
+    Skip,
+    Update,
+    UpdateSubdirectory,
+    UpdateAll,
+}
+
+fn output_status_line_with_color(
+    writer: &mut dyn WriteColor,
+    path: &std::path::Path,
+    status: &reporting::EntryStatus,
+) -> anyhow::Result<()> {
+    write!(writer, "[")?;
+
+    let mut failed_spec = ColorSpec::new();
+    failed_spec
+        .set_fg(Some(Color::Black))
+        .set_bg(Some(Color::Red));
+    let mut missing_spec = ColorSpec::new();
+    missing_spec.set_fg(Some(Color::Red));
+    let mut unknown_spec = ColorSpec::new();
+    unknown_spec.set_fg(Some(Color::Yellow));
+
+    let color_spec = match status {
+        reporting::EntryStatus::Ok => None,
+        reporting::EntryStatus::VerificationError => Some(&failed_spec),
+        reporting::EntryStatus::Missing => Some(&missing_spec),
+        reporting::EntryStatus::Unknown => Some(&unknown_spec),
+    };
+
+    if let Some(spec) = &color_spec {
+        writer.set_color(spec)?;
+    }
+
+    write!(writer, "{}", status.short_name())?;
+    writer.reset()?;
+    writeln!(writer, "] {path:?}")?;
+    Ok(())
+}
+
+fn read_user_choice(writer: &mut dyn WriteColor) -> anyhow::Result<UpdateAction> {
+    writer.set_color(ColorSpec::new().set_fg(Some(Color::Cyan)))?;
+    print!("[S]kip [U]pdate [D]irectory [A]ll (default: Skip): ");
+    writer.reset()?;
+    std::io::stdout().flush()?;
+
+    let key = read_single_char()?.to_ascii_lowercase();
+    println!("{key}");
+
+    match key {
+        'u' => Ok(UpdateAction::Update),
+        'd' => Ok(UpdateAction::UpdateSubdirectory),
+        'a' => Ok(UpdateAction::UpdateAll),
+        _ => Ok(UpdateAction::Skip),
+    }
+}
+
+fn confirm_updates(
+    paths: &HashSet<&std::path::Path>,
+    writer: &mut dyn WriteColor,
+) -> anyhow::Result<bool> {
+    if paths.is_empty() {
+        writer.set_color(ColorSpec::new().set_fg(Some(Color::Green)))?;
+        println!("Nothing to do.");
+        writer.reset()?;
+        return Ok(false);
+    }
+
+    writer.set_color(ColorSpec::new().set_fg(Some(Color::Green)))?;
+    println!("\nThe following files will be updated:");
+    writer.reset()?;
+
+    for path in paths {
+        writer.set_color(
+            ColorSpec::new()
+                .set_fg(Some(Color::White))
+                .set_intense(true),
+        )?;
+        println!("  {path:?}");
+        writer.reset()?;
+    }
+
+    writer.set_color(ColorSpec::new().set_fg(Some(Color::Cyan)))?;
+    print!("\nProceed with updates? [y/N]: ");
+    writer.reset()?;
+    std::io::stdout().flush()?;
+
+    let key = read_single_char()?.to_ascii_lowercase();
+    println!("{key}");
+
+    Ok(key == 'y')
+}
+
+fn update_catalog(params: UpdateParams) -> anyhow::Result<()> {
+    let directory = catalog::Directory::new(&params.path)?;
+
+    let verification = load_and_verify_catalog(directory, params.algo, &params.path)?;
+    let report = verification.report;
+    let algo = verification.algo;
+
+    let mut writer = StandardStream::stderr(termcolor::ColorChoice::Auto);
+
+    let mut files_to_update = HashSet::new();
+    let mut update_all = false;
+    let mut processed_directories = HashSet::new();
+    let skip_all = false;
+
+    for entry in report.entries() {
+        if matches!(entry.status(), reporting::EntryStatus::Ok) {
+            continue;
+        }
+
+        if skip_all {
+            continue;
+        }
+
+        if update_all {
+            files_to_update.insert(entry.path());
+            continue;
+        }
+
+        // Skip if this file's directory was already processed with "d" option
+        let current_dir = entry.path().parent();
+        if let Some(dir) = current_dir {
+            if processed_directories.contains(dir) {
+                files_to_update.insert(entry.path());
+                continue;
+            }
+        }
+
+        println!();
+        output_status_line_with_color(&mut writer, entry.path(), entry.status())?;
+
+        match entry.status() {
+            reporting::EntryStatus::VerificationError => {
+                writer.set_color(ColorSpec::new().set_fg(Some(Color::Red)))?;
+                println!("  Status: Checksum mismatch");
+                writer.reset()?;
+            }
+            reporting::EntryStatus::Missing => {
+                writer.set_color(ColorSpec::new().set_fg(Some(Color::Red)))?;
+                println!("  Status: File missing");
+                writer.reset()?;
+            }
+            reporting::EntryStatus::Unknown => {
+                writer.set_color(ColorSpec::new().set_fg(Some(Color::Yellow)))?;
+                println!("  Status: Unknown file");
+                writer.reset()?;
+            }
+            reporting::EntryStatus::Ok => unreachable!(),
+        }
+
+        let action = read_user_choice(&mut writer)?;
+
+        match action {
+            UpdateAction::Skip => continue,
+            UpdateAction::Update => {
+                files_to_update.insert(entry.path());
+            }
+            UpdateAction::UpdateSubdirectory => {
+                files_to_update.insert(entry.path());
+
+                // Mark this directory as processed
+                if let Some(dir) = current_dir {
+                    processed_directories.insert(dir);
+                }
+
+                // Add all other files in the same directory
+                for other_entry in report.entries() {
+                    if matches!(other_entry.status(), reporting::EntryStatus::Ok) {
+                        continue;
+                    }
+
+                    if current_dir == other_entry.path().parent() {
+                        files_to_update.insert(other_entry.path());
+                    }
+                }
+            }
+            UpdateAction::UpdateAll => {
+                files_to_update.insert(entry.path());
+                update_all = true;
+            }
+        }
+    }
+
+    if update_all {
+        for entry in report.entries() {
+            if !matches!(entry.status(), reporting::EntryStatus::Ok) {
+                files_to_update.insert(entry.path());
+            }
+        }
+    }
+
+    if !confirm_updates(&files_to_update, &mut writer)? {
+        if !files_to_update.is_empty() {
+            writer.set_color(ColorSpec::new().set_fg(Some(Color::Yellow)))?;
+            println!("Update cancelled.");
+            writer.reset()?;
+        }
+        return Ok(());
+    }
+
+    let directory_for_update = catalog::Directory::new(&params.path)?;
+    let mut catalog = directory_for_update.load(params.algo)?;
+
+    for path in &files_to_update {
+        let relative_path = pathdiff::diff_paths(path, catalog.directory().path())
+            .ok_or_else(|| anyhow::format_err!("Unable to get relative path for {:?}", path))?;
+
+        if path.exists() {
+            let (_, new_hash) = algo
+                .hash_file(path)
+                .with_context(|| format!("Failed hashing {path:?}"))?;
+            catalog.update_entry(&relative_path.to_string_lossy(), new_hash);
+            writer.set_color(ColorSpec::new().set_fg(Some(Color::Green)))?;
+            println!("Updated: {path:?}");
+            writer.reset()?;
+        } else {
+            catalog.remove_entry(&relative_path.to_string_lossy());
+            writer.set_color(ColorSpec::new().set_fg(Some(Color::Red)))?;
+            println!("Removed: {path:?}");
+            writer.reset()?;
+        }
+    }
+
+    catalog.write_signature_file(true)?;
+    writer.set_color(
+        ColorSpec::new()
+            .set_fg(Some(Color::Green))
+            .set_intense(true),
+    )?;
+    println!("Catalog updated successfully.");
+    writer.reset()?;
+    Ok(())
 }
 
 fn main() {
@@ -236,6 +502,7 @@ fn entry_point() -> anyhow::Result<()> {
         Command::Sign { params } => create_catalog(params),
         Command::Append { params } => append_catalog(params),
         Command::Test { params } => test_catalog(params),
+        Command::Update { params } => update_catalog(params),
         Command::ListAlgos => {
             for algo in Algorithm::iter() {
                 println!("{algo}");

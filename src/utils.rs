@@ -40,3 +40,28 @@ impl<T: AsRef<Path>> Canonicalizeable for T {
             .assume_canonical())
     }
 }
+
+pub(crate) fn read_single_char() -> anyhow::Result<char> {
+    use crossterm::{
+        event::{self, Event, KeyCode},
+        terminal::{disable_raw_mode, enable_raw_mode},
+    };
+
+    enable_raw_mode()?;
+
+    let result = loop {
+        match event::read()? {
+            Event::Key(key_event) => {
+                let ch = match key_event.code {
+                    KeyCode::Char(c) => c,
+                    _ => continue,
+                };
+                break Ok(ch);
+            }
+            _ => continue,
+        }
+    };
+
+    disable_raw_mode()?;
+    result
+}

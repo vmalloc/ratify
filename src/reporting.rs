@@ -17,6 +17,17 @@ pub enum EntryStatus {
     Unknown,
 }
 
+impl EntryStatus {
+    pub fn short_name(&self) -> &'static str {
+        match self {
+            Self::Ok => "OK",
+            Self::VerificationError => "FAIL",
+            Self::Missing => "MISS",
+            Self::Unknown => "UNKN",
+        }
+    }
+}
+
 pub struct ReportEntry {
     path: Arc<CanonicalPath<PathBuf>>,
     processed_size: u64,
@@ -47,6 +58,10 @@ impl ReportEntry {
     pub fn processed_size(&self) -> u64 {
         self.processed_size
     }
+
+    pub fn status(&self) -> &EntryStatus {
+        &self.status
+    }
 }
 
 pub trait ReportFormatter {
@@ -61,16 +76,30 @@ pub trait ReportFormatter {
 fn output_short_status_line(
     writer: &mut dyn termcolor::WriteColor,
     entry: &ReportEntry,
-    short_status: &str,
-    color_spec: Option<&ColorSpec>,
 ) -> anyhow::Result<()> {
     write!(writer, "[")?;
+
+    let mut failed_spec = ColorSpec::new();
+    failed_spec
+        .set_fg(Some(Color::Black))
+        .set_bg(Some(Color::Red));
+    let mut missing_spec = ColorSpec::new();
+    missing_spec.set_fg(Some(Color::Red));
+    let mut unknown_spec = ColorSpec::new();
+    unknown_spec.set_fg(Some(Color::Yellow));
+
+    let color_spec = match &entry.status {
+        EntryStatus::Ok => None,
+        EntryStatus::VerificationError => Some(&failed_spec),
+        EntryStatus::Missing => Some(&missing_spec),
+        EntryStatus::Unknown => Some(&unknown_spec),
+    };
 
     if let Some(spec) = &color_spec {
         writer.set_color(spec)?;
     }
 
-    write!(writer, "{}", &short_status[..4])?;
+    write!(writer, "{}", entry.status.short_name())?;
     writer.reset()?;
     writeln!(writer, "] {:?}", entry.path())?;
     Ok(())
@@ -97,34 +126,15 @@ impl ReportFormatter for PlainFormatter {
                     num_ok += 1;
                 }
                 EntryStatus::VerificationError => {
-                    output_short_status_line(
-                        writer,
-                        entry,
-                        "FAILED ",
-                        Some(
-                            ColorSpec::new()
-                                .set_fg(Some(Color::Black))
-                                .set_bg(Some(Color::Red)),
-                        ),
-                    )?;
+                    output_short_status_line(writer, entry)?;
                     num_failed += 1
                 }
                 EntryStatus::Missing => {
-                    output_short_status_line(
-                        writer,
-                        entry,
-                        "MISSING",
-                        Some(ColorSpec::new().set_fg(Some(Color::Red))),
-                    )?;
+                    output_short_status_line(writer, entry)?;
                     num_missing += 1
                 }
                 EntryStatus::Unknown => {
-                    output_short_status_line(
-                        writer,
-                        entry,
-                        "UNKNOWN",
-                        Some(ColorSpec::new().set_fg(Some(Color::Yellow))),
-                    )?;
+                    output_short_status_line(writer, entry)?;
                     num_unknown += 1;
                 }
             }
@@ -225,6 +235,10 @@ impl VerificationReport {
                 status: EntryStatus::Unknown,
             });
         }
+    }
+
+    pub fn entries(&self) -> &[ReportEntry] {
+        &self.entries
     }
 
     pub(crate) fn result(&self) -> Result<(), anyhow::Error> {
