@@ -1,4 +1,5 @@
 use anyhow::Context;
+use blake3::Hasher as Blake3;
 use digest::Digest;
 use md5::Md5;
 use sha1::Sha1;
@@ -10,6 +11,7 @@ use strum::{EnumIter, EnumString, IntoEnumIterator, IntoStaticStr};
 #[derive(IntoStaticStr, EnumString, EnumIter, strum::Display, Clone, Copy)]
 #[strum(serialize_all = "snake_case")]
 pub enum Algorithm {
+    Blake3,
     Md5,
     Sha1,
     Sha256,
@@ -46,7 +48,7 @@ impl Algorithm {
         let mut file =
             std::fs::File::open(path).with_context(|| format!("{path:?}: Failed opening file"))?;
 
-        let (size, data) = hash_impl!(self, &mut file, Md5, Sha1, Sha256, Sha512)?;
+        let (size, data) = hash_impl!(self, &mut file, Blake3, Md5, Sha1, Sha256, Sha512)?;
         Ok((size, data))
     }
 }
