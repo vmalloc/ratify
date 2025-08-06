@@ -77,6 +77,8 @@ class Sigfile:
         return entries
 
     def cfv_verify(self):
+        if "blake3" in self.path.name:
+            pytest.skip("CFV does not support blake3 algorithm")
         subprocess.check_call("cfv", cwd=self.path.parent)
 
 
@@ -133,6 +135,8 @@ def algorithm(request):
 
 @pytest.fixture
 def cfv_sigfile(directory, algorithm):
+    if isinstance(algorithm, Blake3Algorithm):
+        pytest.skip("CFV does not support blake3 algorithm")
     sigfile = algorithm.signature_file(directory)
     subprocess.check_call(f"cfv -C -t {algorithm} -rr .", cwd=directory, shell=True)
     assert sigfile.path.exists()
