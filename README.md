@@ -62,7 +62,6 @@ Ratify will check all files against the catalog and report any discrepancies.
 |---------|-------------|
 | `sign` | Create a new signature catalog for a directory |
 | `test` | Verify files against an existing catalog |
-| `append` | Add new files to an existing catalog |
 | `update` | Interactively update checksums for changed files |
 | `list-algos` | Show all available hash algorithms |
 
@@ -107,10 +106,7 @@ ratify test -a sha256 /path/to/directory
 #### Managing File Changes
 
 ```bash
-# Add new files to existing catalog
-ratify append /path/to/directory
-
-# Interactively update changed files
+# Interactively update changed files and add new files
 ratify update /path/to/directory
 
 # Update with specific algorithm

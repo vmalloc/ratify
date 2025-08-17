@@ -153,3 +153,42 @@ def test_interactive_update_skip_file(directory, binary, algorithm, random_data_
     )
 
     assert result.returncode != 0, "Test command should have failed after skipping the modified file"
+
+
+def test_unknown_files_warning(directory, run, algorithm, random_data_gen, report):
+    """Test that unknown files are detected and reported properly.
+
+    This test was migrated from test_append.py and verifies that
+    unknown files trigger appropriate warnings and reports.
+    """
+    run(f"sign -a {algorithm} {directory}")
+    with (directory / "new_file").open("wb") as f:
+        f.write(random_data_gen())
+    with pytest.raises(subprocess.CalledProcessError) as e:
+        run(
+            f"test {directory} --report json --report-filename {report.filename}",
+            stderr=subprocess.PIPE,
+        )
+    assert b"Unknown entries found" in e.value.stderr
+    rep = report.load()
+    [entry] = rep["failed"]
+    assert entry["path"] == f"{directory / 'new_file'}"
+    assert entry["status"] == "unknown"
+
+
+def test_update_with_confirm_flag(directory, run, algorithm, random_data_gen):
+    """Test update command with --confirm flag (replaces old append functionality).
+
+    This test was migrated from test_append.py and verifies that
+    'update --confirm' automatically adds new files to the catalog
+    without user interaction.
+    """
+    run(f"sign -a {algorithm} {directory}")
+    with (directory / "new_file").open("wb") as f:
+        f.write(random_data_gen())
+    catalog = algorithm.signature_file(directory)
+    with catalog.path.open() as f:
+        assert "new_file" not in f.read()
+    run(f"update --confirm {directory}")
+    with catalog.path.open() as f:
+        assert "new_file" in f.read()
