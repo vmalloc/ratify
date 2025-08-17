@@ -30,12 +30,6 @@ struct SignParams {
 }
 
 #[derive(Parser)]
-struct AppendParams {
-    #[clap(default_value = ".")]
-    path: PathBuf,
-}
-
-#[derive(Parser)]
 struct TestParams {
     /// Kind of report to generate (plain/json)
     #[clap(long = "report", default_value = "plain")]
@@ -59,6 +53,10 @@ struct UpdateParams {
     #[clap(short = 'a', long)]
     algo: Option<Algorithm>,
 
+    /// automatically confirm all updates without prompting
+    #[clap(long)]
+    confirm: bool,
+
     #[clap(default_value = ".")]
     path: PathBuf,
 }
@@ -70,11 +68,7 @@ enum Command {
         #[clap(flatten)]
         params: SignParams,
     },
-    /// Adds entries for unknown files to an already-existing catalog
-    Append {
-        #[clap(flatten)]
-        params: AppendParams,
-    },
+
     /// Verifies an existing signature catalog against the actual directory contents
     Test {
         #[clap(flatten)]
@@ -216,15 +210,6 @@ fn test_catalog(params: TestParams) -> anyhow::Result<()> {
     report.result()
 }
 
-fn append_catalog(params: AppendParams) -> anyhow::Result<()> {
-    let dir = crate::catalog::Directory::new(params.path)?;
-    let mut catalog = dir.load(None)?;
-
-    catalog.populate()?;
-
-    catalog.write_signature_file(true)
-}
-
 #[derive(Debug, Clone, PartialEq)]
 enum UpdateAction {
     Skip,
@@ -329,97 +314,108 @@ fn update_catalog(params: UpdateParams) -> anyhow::Result<()> {
     let mut writer = StandardStream::stderr(termcolor::ColorChoice::Auto);
 
     let mut files_to_update = HashSet::new();
-    let mut update_all = false;
-    let mut processed_directories = HashSet::new();
-    let skip_all = false;
 
-    for entry in report.entries() {
-        if matches!(entry.status(), reporting::EntryStatus::Ok) {
-            continue;
-        }
-
-        if skip_all {
-            continue;
-        }
-
-        if update_all {
-            files_to_update.insert(entry.path());
-            continue;
-        }
-
-        // Skip if this file's directory was already processed with "d" option
-        let current_dir = entry.path().parent();
-        if let Some(dir) = current_dir {
-            if processed_directories.contains(dir) {
-                files_to_update.insert(entry.path());
-                continue;
-            }
-        }
-
-        println!();
-        output_status_line_with_color(&mut writer, entry.path(), entry.status())?;
-
-        match entry.status() {
-            reporting::EntryStatus::VerificationError => {
-                writer.set_color(ColorSpec::new().set_fg(Some(Color::Red)))?;
-                println!("  Status: Checksum mismatch");
-                writer.reset()?;
-            }
-            reporting::EntryStatus::Missing => {
-                writer.set_color(ColorSpec::new().set_fg(Some(Color::Red)))?;
-                println!("  Status: File missing");
-                writer.reset()?;
-            }
-            reporting::EntryStatus::Unknown => {
-                writer.set_color(ColorSpec::new().set_fg(Some(Color::Yellow)))?;
-                println!("  Status: Unknown file");
-                writer.reset()?;
-            }
-            reporting::EntryStatus::Ok => unreachable!(),
-        }
-
-        let action = read_user_choice(&mut writer)?;
-
-        match action {
-            UpdateAction::Skip => continue,
-            UpdateAction::Update => {
-                files_to_update.insert(entry.path());
-            }
-            UpdateAction::UpdateSubdirectory => {
-                files_to_update.insert(entry.path());
-
-                // Mark this directory as processed
-                if let Some(dir) = current_dir {
-                    processed_directories.insert(dir);
-                }
-
-                // Add all other files in the same directory
-                for other_entry in report.entries() {
-                    if matches!(other_entry.status(), reporting::EntryStatus::Ok) {
-                        continue;
-                    }
-
-                    if current_dir == other_entry.path().parent() {
-                        files_to_update.insert(other_entry.path());
-                    }
-                }
-            }
-            UpdateAction::UpdateAll => {
-                files_to_update.insert(entry.path());
-                update_all = true;
-            }
-        }
-    }
-
-    if update_all {
+    if params.confirm {
+        // Auto-confirm mode: add all files with discrepancies
         for entry in report.entries() {
             if !matches!(entry.status(), reporting::EntryStatus::Ok) {
                 files_to_update.insert(entry.path());
             }
         }
+    } else {
+        // Interactive mode: ask user for each file
+        let mut update_all = false;
+        let mut processed_directories = HashSet::new();
+        let skip_all = false;
+
+        for entry in report.entries() {
+            if matches!(entry.status(), reporting::EntryStatus::Ok) {
+                continue;
+            }
+
+            if skip_all {
+                continue;
+            }
+
+            if update_all {
+                files_to_update.insert(entry.path());
+                continue;
+            }
+
+            // Skip if this file's directory was already processed with "d" option
+            let current_dir = entry.path().parent();
+            if let Some(dir) = current_dir {
+                if processed_directories.contains(dir) {
+                    files_to_update.insert(entry.path());
+                    continue;
+                }
+            }
+
+            println!();
+            output_status_line_with_color(&mut writer, entry.path(), entry.status())?;
+
+            match entry.status() {
+                reporting::EntryStatus::VerificationError => {
+                    writer.set_color(ColorSpec::new().set_fg(Some(Color::Red)))?;
+                    println!("  Status: Checksum mismatch");
+                    writer.reset()?;
+                }
+                reporting::EntryStatus::Missing => {
+                    writer.set_color(ColorSpec::new().set_fg(Some(Color::Red)))?;
+                    println!("  Status: File missing");
+                    writer.reset()?;
+                }
+                reporting::EntryStatus::Unknown => {
+                    writer.set_color(ColorSpec::new().set_fg(Some(Color::Yellow)))?;
+                    println!("  Status: Unknown file");
+                    writer.reset()?;
+                }
+                reporting::EntryStatus::Ok => unreachable!(),
+            }
+
+            let action = read_user_choice(&mut writer)?;
+
+            match action {
+                UpdateAction::Skip => continue,
+                UpdateAction::Update => {
+                    files_to_update.insert(entry.path());
+                }
+                UpdateAction::UpdateSubdirectory => {
+                    files_to_update.insert(entry.path());
+
+                    // Mark this directory as processed
+                    if let Some(dir) = current_dir {
+                        processed_directories.insert(dir);
+                    }
+
+                    // Add all other files in the same directory
+                    for other_entry in report.entries() {
+                        if matches!(other_entry.status(), reporting::EntryStatus::Ok) {
+                            continue;
+                        }
+
+                        if current_dir == other_entry.path().parent() {
+                            files_to_update.insert(other_entry.path());
+                        }
+                    }
+                }
+                UpdateAction::UpdateAll => {
+                    files_to_update.insert(entry.path());
+                    update_all = true;
+                }
+            }
+        }
+
+        if update_all {
+            for entry in report.entries() {
+                if !matches!(entry.status(), reporting::EntryStatus::Ok) {
+                    files_to_update.insert(entry.path());
+                }
+            }
+        }
     }
 
-    if !confirm_updates(&files_to_update, &mut writer)? {
+    if !params.confirm && !confirm_updates(&files_to_update, &mut writer)? {
         if !files_to_update.is_empty() {
             writer.set_color(ColorSpec::new().set_fg(Some(Color::Yellow)))?;
             println!("Update cancelled.");
@@ -500,7 +496,7 @@ fn entry_point() -> anyhow::Result<()> {
 
     match opts.command {
         Command::Sign { params } => create_catalog(params),
-        Command::Append { params } => append_catalog(params),
+
         Command::Test { params } => test_catalog(params),
         Command::Update { params } => update_catalog(params),
         Command::ListAlgos => {
