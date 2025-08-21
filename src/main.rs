@@ -84,6 +84,7 @@ enum Command {
 }
 
 #[derive(Parser)]
+#[command(version = env!("CARGO_PKG_VERSION"))]
 struct Opts {
     #[arg(short, long="verbose", action=clap::ArgAction::Count)]
     verbosity: u8,
