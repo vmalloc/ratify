@@ -16,10 +16,9 @@ jobs:
           fetch-depth: 0
 
       - name: Install stable toolchain
-        uses: actions-rs/toolchain@v1
+        uses: dtolnay/rust-toolchain@stable
         with:
-          toolchain: stable
-          override: true
+          components: clippy
 
       - uses: actions/cache@v4
         with:
@@ -30,10 +29,7 @@ jobs:
           key: ${{ runner.os }}
 
       - name: Cargo clippy
-        uses: actions-rs/cargo@v1
-        with:
-          command: clippy
-          args: --all --tests -- -D warnings -W clippy::dbg_macro
+        run: cargo clippy --all --tests -- -D warnings -W clippy::dbg_macro
 
       - name: Cargo test+build
         run: cargo test --release && cargo build --release

@@ -10,6 +10,7 @@ use utils::{read_single_char, Canonicalizeable};
 
 mod algo;
 mod catalog;
+mod config;
 mod errors;
 mod parallel;
 mod progress;
@@ -18,11 +19,11 @@ mod utils;
 
 use reporting::ReportFormatter;
 
-#[derive(Parser)]
+#[derive(Parser, Debug)]
 struct SignParams {
     /// algorithm to use for hashing (run list-algos to view available algorithms)
     #[clap(short = 'a', long)]
-    algo: Algorithm,
+    algo: Option<Algorithm>,
     #[arg(short)]
     recursive: bool,
     #[clap(default_value = ".")]
@@ -169,10 +170,16 @@ fn load_and_verify_catalog(
     Ok(Verification { report, algo })
 }
 
-fn create_catalog(params: SignParams) -> anyhow::Result<()> {
+fn create_catalog(params: SignParams, config: &config::Config) -> anyhow::Result<()> {
     let directory = catalog::Directory::new(&params.path)?;
 
-    let mut catalog = directory.empty_catalog(params.algo);
+    let algo = params.algo.or(config.default_sign_algo).ok_or_else(|| {
+        anyhow::format_err!(
+            "No algorithm specified. Use --algo or set default_sign_algo in ~/.config/ratify.toml"
+        )
+    })?;
+
+    let mut catalog = directory.empty_catalog(algo);
 
     catalog.populate()?;
 
@@ -470,7 +477,7 @@ fn main() {
                 eprintln!("{e}");
             }
             _ => {
-                log::error!("Error occurred: {e:?}");
+                eprintln!("ERROR: {e}");
             }
         }
 
@@ -480,6 +487,7 @@ fn main() {
 
 fn entry_point() -> anyhow::Result<()> {
     let opts = Opts::parse();
+    let config = config::Config::load()?;
 
     tracing_subscriber::fmt()
         .with_env_filter(
@@ -496,7 +504,7 @@ fn entry_point() -> anyhow::Result<()> {
         .init();
 
     match opts.command {
-        Command::Sign { params } => create_catalog(params),
+        Command::Sign { params } => create_catalog(params, &config),
 
         Command::Test { params } => test_catalog(params),
         Command::Update { params } => update_catalog(params),

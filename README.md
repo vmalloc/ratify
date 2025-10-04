@@ -42,6 +42,13 @@ Sign all files in the current directory using SHA-256:
 ratify sign -a sha256 .
 ```
 
+Or, set up a default algorithm in `~/.config/ratify.toml` and omit the flag:
+
+```bash
+# First, create ~/.config/ratify.toml with: default_sign_algo = "sha256"
+ratify sign .
+```
+
 This creates a signature catalog file (e.g., `dirname.sha256`) containing checksums for all files.
 
 ### Verifying Files
@@ -75,6 +82,23 @@ Ratify will check all files against the catalog and report any discrepancies.
 | SHA-1 | `sha1` | Legacy support (consider upgrading to SHA-256+) |
 | MD5 | `md5` | Legacy support (not recommended for security) |
 
+## ⚙️ Configuration
+
+Ratify supports global configuration through a TOML file located at `~/.config/ratify.toml`. This allows you to set default preferences that apply across all operations.
+
+### Configuration File Format
+
+```toml
+# Default algorithm to use when --algo is not specified for signing
+default_sign_algo = "blake3"
+```
+
+### Supported Configuration Options
+
+| Option | Type | Description | Example |
+|--------|------|-------------|---------|
+| `default_sign_algo` | String | Default hash algorithm for signing operations | `"blake3"`, `"sha256"`, `"sha512"`, `"sha1"`, `"md5"` |
+
 ### Detailed Examples
 
 #### Creating Signatures with Different Algorithms
@@ -85,6 +109,9 @@ ratify sign -a blake3 /path/to/directory
 
 # Use SHA-256 (widely compatible)
 ratify sign -a sha256 ~/documents
+
+# With configuration file (default_sign_algo = "blake3")
+ratify sign ~/documents  # Uses blake3 from config
 
 # Recursive signing (default behavior)
 ratify sign -a sha256 -r /path/to/directory
@@ -193,10 +220,6 @@ ratify update /etc/configs
 - **[MISSING]**: File exists in catalog but not on disk
 - **[UNKNOWN]**: File exists on disk but not in catalog
 
-### Exit Codes
-
-- `0`: Success (all files verified or operation completed)
-- `-1`: Failure (verification errors or other issues)
 
 ## 🤝 Contributing
 
