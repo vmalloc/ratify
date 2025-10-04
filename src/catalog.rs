@@ -20,8 +20,9 @@ pub struct Directory {
 
 impl Directory {
     pub fn new(path: impl Into<PathBuf>) -> anyhow::Result<Self> {
-        let path = std::fs::canonicalize(path.into())
-            .context("Failed canonicalizing path")?
+        let path = path.into();
+        let path = std::fs::canonicalize(&path)
+            .with_context(|| format!("Failed resolve path {path:?}"))?
             .assume_canonical();
 
         Ok(Self { path })

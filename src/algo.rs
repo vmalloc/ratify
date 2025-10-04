@@ -8,8 +8,19 @@ use sha2::Sha512;
 use std::path::Path;
 use strum::{EnumIter, EnumString, IntoEnumIterator, IntoStaticStr};
 
-#[derive(IntoStaticStr, EnumString, EnumIter, strum::Display, Clone, Copy)]
+#[derive(
+    Debug,
+    IntoStaticStr,
+    EnumString,
+    EnumIter,
+    strum::Display,
+    Clone,
+    Copy,
+    serde::Serialize,
+    serde::Deserialize,
+)]
 #[strum(serialize_all = "snake_case")]
+#[serde(rename_all = "snake_case")]
 pub enum Algorithm {
     Blake3,
     Md5,
