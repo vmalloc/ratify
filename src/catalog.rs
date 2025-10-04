@@ -16,6 +16,7 @@ use crate::{
 
 pub struct Directory {
     path: CanonicalPath<PathBuf>,
+    catalog_path: Option<CanonicalPath<PathBuf>>,
 }
 
 impl Directory {
@@ -25,26 +26,60 @@ impl Directory {
             .with_context(|| format!("Failed resolve path {path:?}"))?
             .assume_canonical();
 
-        Ok(Self { path })
+        Ok(Self {
+            path,
+            catalog_path: None,
+        })
+    }
+
+    pub fn with_catalog_file(
+        path: impl Into<PathBuf>,
+        catalog_file: impl Into<PathBuf>,
+    ) -> anyhow::Result<Self> {
+        let path = path.into();
+        let path = std::fs::canonicalize(&path)
+            .with_context(|| format!("Failed resolve path {path:?}"))?
+            .assume_canonical();
+
+        let catalog_file = catalog_file.into();
+        let catalog_file = if catalog_file.is_absolute() {
+            catalog_file.assume_canonical()
+        } else {
+            path.as_path().join(catalog_file).assume_canonical()
+        };
+
+        Ok(Self {
+            path,
+            catalog_path: Some(catalog_file),
+        })
     }
 
     pub fn load(self, algo: Option<Algorithm>) -> anyhow::Result<Catalog> {
-        let algo = algo
-            .or_else(|| Algorithm::try_deduce_from_path(self.path.as_path()))
-            .ok_or_else(|| anyhow::format_err!("Failed to detect signature file"))?;
-        let filename = self.signature_file_path(algo);
+        let (algo, filename) = if let Some(custom_file) = &self.catalog_path {
+            let algo = algo
+                .or_else(|| Algorithm::try_deduce_from_file(custom_file.as_path()))
+                .ok_or_else(|| anyhow::format_err!(
+                    "Failed to detect algorithm from catalog file {custom_file:?}. Please specify algorithm explicitly using --algo"
+                ))?;
+            (algo, custom_file.clone())
+        } else {
+            let algo = algo
+                .or_else(|| Algorithm::try_deduce_from_path(self.path.as_path()))
+                .ok_or_else(|| anyhow::format_err!("Failed to detect signature file"))?;
+            (algo, self.signature_file_path(algo))
+        };
 
         log::debug!("Opening signature file {filename:?}...");
         let file = std::io::BufReader::new(
             std::fs::File::open(filename.as_path())
-                .with_context(|| format!("Failed opening {:?}", self.path))?,
+                .with_context(|| format!("Failed opening {:?}", filename))?,
         );
         let mut entries = BTreeMap::new();
 
         for (lineno, line) in file.lines().enumerate().map(|(lineno, l)| (lineno + 1, l)) {
             let line = line.context("Cannot read file")?;
             let (hash, entry_path) = line.split_once(" *").ok_or_else(|| {
-                anyhow::anyhow!("Syntax error at line {} of {:?}", lineno, self.path)
+                anyhow::anyhow!("Syntax error at line {} of {:?}", lineno, filename)
             })?;
 
             let entry = hex::decode(hash)
@@ -54,11 +89,11 @@ impl Directory {
             if prev.is_some() {
                 anyhow::bail!(
                     "Entry {entry_path:?} appears multiple times in {:?}",
-                    self.path
+                    filename
                 );
             }
         }
-        let metadata = Arc::new(self.catalog_metadata(algo));
+        let metadata = Arc::new(self.catalog_metadata_with_file(algo, filename));
 
         Ok(Catalog {
             metadata,
@@ -101,8 +136,23 @@ impl Directory {
         }
     }
 
+    pub(crate) fn catalog_metadata_with_file(
+        &self,
+        algo: Algorithm,
+        file_path: CanonicalPath<PathBuf>,
+    ) -> CatalogMetadata {
+        CatalogMetadata {
+            algo,
+            signature_file_path: file_path,
+        }
+    }
+
     pub(crate) fn empty_catalog(self, algo: Algorithm) -> Catalog {
-        let metadata = Arc::new(self.catalog_metadata(algo));
+        let metadata = if let Some(custom_file) = &self.catalog_path {
+            Arc::new(self.catalog_metadata_with_file(algo, custom_file.clone()))
+        } else {
+            Arc::new(self.catalog_metadata(algo))
+        };
         Catalog {
             directory: self,
             entries: Default::default(),

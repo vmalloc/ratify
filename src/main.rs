@@ -24,6 +24,9 @@ struct SignParams {
     /// algorithm to use for hashing (run list-algos to view available algorithms)
     #[clap(short = 'a', long)]
     algo: Option<Algorithm>,
+    /// path to the catalog file to create/use instead of the default location
+    #[clap(long)]
+    catalog_file: Option<PathBuf>,
     #[arg(short)]
     recursive: bool,
     #[clap(default_value = ".")]
@@ -44,6 +47,10 @@ struct TestParams {
     #[clap(short = 'a', long)]
     algo: Option<Algorithm>,
 
+    /// path to the catalog file to use instead of the default location
+    #[clap(long)]
+    catalog_file: Option<PathBuf>,
+
     #[clap(default_value = ".")]
     path: PathBuf,
 }
@@ -53,6 +60,10 @@ struct UpdateParams {
     /// algorithm to use
     #[clap(short = 'a', long)]
     algo: Option<Algorithm>,
+
+    /// path to the catalog file to use instead of the default location
+    #[clap(long)]
+    catalog_file: Option<PathBuf>,
 
     /// automatically confirm all updates without prompting
     #[clap(long)]
@@ -141,9 +152,7 @@ fn load_and_verify_catalog(
             .collect::<Result<HashSet<_>, _>>()
     });
 
-    let catalog = directory
-        .load(algo_param)
-        .context("Failed loading directory")?;
+    let catalog = directory.load(algo_param)?;
     let catalog_filename = catalog.metadata().signature_file_path().clone();
     let algo = catalog.metadata().algo();
 
@@ -171,7 +180,11 @@ fn load_and_verify_catalog(
 }
 
 fn create_catalog(params: SignParams, config: &config::Config) -> anyhow::Result<()> {
-    let directory = catalog::Directory::new(&params.path)?;
+    let directory = if let Some(catalog_file) = params.catalog_file {
+        catalog::Directory::with_catalog_file(&params.path, catalog_file)?
+    } else {
+        catalog::Directory::new(&params.path)?
+    };
 
     let algo = params.algo.or(config.default_sign_algo).ok_or_else(|| {
         anyhow::format_err!(
@@ -188,7 +201,11 @@ fn create_catalog(params: SignParams, config: &config::Config) -> anyhow::Result
 
 fn test_catalog(params: TestParams) -> anyhow::Result<()> {
     let start = std::time::Instant::now();
-    let directory = catalog::Directory::new(&params.path)?;
+    let directory = if let Some(catalog_file) = params.catalog_file {
+        catalog::Directory::with_catalog_file(&params.path, catalog_file)?
+    } else {
+        catalog::Directory::new(&params.path)?
+    };
 
     let report = load_and_verify_catalog(directory, params.algo, &params.path)?.report;
 
@@ -313,7 +330,11 @@ fn confirm_updates(
 }
 
 fn update_catalog(params: UpdateParams) -> anyhow::Result<()> {
-    let directory = catalog::Directory::new(&params.path)?;
+    let directory = if let Some(catalog_file) = &params.catalog_file {
+        catalog::Directory::with_catalog_file(&params.path, catalog_file)?
+    } else {
+        catalog::Directory::new(&params.path)?
+    };
 
     let verification = load_and_verify_catalog(directory, params.algo, &params.path)?;
     let report = verification.report;
@@ -324,14 +345,12 @@ fn update_catalog(params: UpdateParams) -> anyhow::Result<()> {
     let mut files_to_update = HashSet::new();
 
     if params.confirm {
-        // Auto-confirm mode: add all files with discrepancies
         for entry in report.entries() {
             if !matches!(entry.status(), reporting::EntryStatus::Ok) {
                 files_to_update.insert(entry.path());
             }
         }
     } else {
-        // Interactive mode: ask user for each file
         let mut update_all = false;
         let mut processed_directories = HashSet::new();
         let skip_all = false;
@@ -350,7 +369,6 @@ fn update_catalog(params: UpdateParams) -> anyhow::Result<()> {
                 continue;
             }
 
-            // Skip if this file's directory was already processed with "d" option
             let current_dir = entry.path().parent();
             if let Some(dir) = current_dir {
                 if processed_directories.contains(dir) {
@@ -391,12 +409,10 @@ fn update_catalog(params: UpdateParams) -> anyhow::Result<()> {
                 UpdateAction::UpdateSubdirectory => {
                     files_to_update.insert(entry.path());
 
-                    // Mark this directory as processed
                     if let Some(dir) = current_dir {
                         processed_directories.insert(dir);
                     }
 
-                    // Add all other files in the same directory
                     for other_entry in report.entries() {
                         if matches!(other_entry.status(), reporting::EntryStatus::Ok) {
                             continue;
@@ -432,7 +448,11 @@ fn update_catalog(params: UpdateParams) -> anyhow::Result<()> {
         return Ok(());
     }
 
-    let directory_for_update = catalog::Directory::new(&params.path)?;
+    let directory_for_update = if let Some(catalog_file) = &params.catalog_file {
+        catalog::Directory::with_catalog_file(&params.path, catalog_file)?
+    } else {
+        catalog::Directory::new(&params.path)?
+    };
     let mut catalog = directory_for_update.load(params.algo)?;
 
     for path in &files_to_update {

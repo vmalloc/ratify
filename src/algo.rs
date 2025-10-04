@@ -38,6 +38,17 @@ impl Algorithm {
             path.exists()
         })
     }
+
+    pub fn try_deduce_from_file(file_path: &Path) -> Option<Self> {
+        let file_name = file_path.file_name()?.to_string_lossy();
+        if let Some(extension) = file_name.split('.').next_back() {
+            Self::iter().find(|variant| {
+                extension.eq_ignore_ascii_case(&variant.to_string())
+            })
+        } else {
+            None
+        }
+    }
 }
 
 macro_rules! hash_impl {
