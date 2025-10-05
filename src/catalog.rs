@@ -123,6 +123,14 @@ impl Directory {
         self.path.as_path()
     }
 
+    pub fn get_catalog_file_path(&self, algo: Algorithm) -> CanonicalPath<PathBuf> {
+        if let Some(custom_file) = &self.catalog_path {
+            custom_file.clone()
+        } else {
+            self.signature_file_path(algo)
+        }
+    }
+
     pub(crate) fn catalog_metadata(&self, algo: Algorithm) -> CatalogMetadata {
         let signature_filename = self.signature_filename(algo);
         let signature_file_path = self
@@ -243,10 +251,13 @@ impl Catalog {
     }
 
     pub fn write_signature_file(&self, allow_existing: bool) -> anyhow::Result<()> {
-        let mut sigfile = std::fs::OpenOptions::new()
-            .create_new(!allow_existing)
-            .write(true)
-            .truncate(false)
+        let mut open_options = std::fs::OpenOptions::new();
+        if allow_existing {
+            open_options.create(true).write(true).truncate(true);
+        } else {
+            open_options.create_new(true).write(true);
+        };
+        let mut sigfile = open_options
             .open(self.metadata.signature_file_path.as_path())
             .with_context(|| {
                 format!(

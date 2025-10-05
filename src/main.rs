@@ -27,6 +27,9 @@ struct SignParams {
     /// path to the catalog file to create/use instead of the default location
     #[clap(long)]
     catalog_file: Option<PathBuf>,
+    /// automatically overwrite existing catalog file without prompting
+    #[clap(long)]
+    overwrite: bool,
     #[arg(short)]
     recursive: bool,
     #[clap(default_value = ".")]
@@ -192,11 +195,24 @@ fn create_catalog(params: SignParams, config: &config::Config) -> anyhow::Result
         )
     })?;
 
+    let catalog_file_path = directory.get_catalog_file_path(algo);
+
+    if catalog_file_path.as_path().exists()
+        && !params.overwrite
+        && !prompt_user_overwrite(catalog_file_path.as_path())?
+    {
+        anyhow::bail!(
+            "Catalog file {:?} already exists. Use --overwrite to overwrite automatically.",
+            catalog_file_path.as_path()
+        );
+    }
+
     let mut catalog = directory.empty_catalog(algo);
 
     catalog.populate()?;
 
-    catalog.write_signature_file(false)
+    let should_overwrite = catalog_file_path.as_path().exists();
+    catalog.write_signature_file(should_overwrite)
 }
 
 fn test_catalog(params: TestParams) -> anyhow::Result<()> {
@@ -291,6 +307,24 @@ fn read_user_choice(writer: &mut dyn WriteColor) -> anyhow::Result<UpdateAction>
         'a' => Ok(UpdateAction::UpdateAll),
         _ => Ok(UpdateAction::Skip),
     }
+}
+
+fn prompt_user_overwrite(catalog_path: &std::path::Path) -> anyhow::Result<bool> {
+    let mut writer = StandardStream::stderr(termcolor::ColorChoice::Auto);
+
+    writer.set_color(ColorSpec::new().set_fg(Some(Color::Yellow)))?;
+    println!("Catalog file {:?} already exists.", catalog_path);
+    writer.reset()?;
+
+    writer.set_color(ColorSpec::new().set_fg(Some(Color::Cyan)))?;
+    print!("Overwrite existing catalog file? [y/N]: ");
+    writer.reset()?;
+    std::io::stdout().flush()?;
+
+    let key = read_single_char()?.to_ascii_lowercase();
+    println!("{key}");
+
+    Ok(key == 'y')
 }
 
 fn confirm_updates(
