@@ -156,7 +156,7 @@ fn load_and_verify_catalog(
     let catalog_filename = catalog.metadata().signature_file_path().clone();
     let algo = catalog.metadata().algo();
 
-    let bar = crate::progress::ProgressBar::new(catalog.len());
+    let bar = crate::progress::ProgressBar::new(Some(catalog.len()));
 
     let mut report = crate::parallel::for_each(catalog.into_iter(), move |entry| {
         let res = entry
@@ -194,7 +194,9 @@ fn create_catalog(params: SignParams, config: &config::Config) -> anyhow::Result
 
     let mut catalog = directory.empty_catalog(algo);
 
-    catalog.populate()?;
+    let bar = crate::progress::ProgressBar::new(None);
+
+    catalog.populate_with_progress(Some(bar))?;
 
     catalog.write_signature_file(false)
 }
