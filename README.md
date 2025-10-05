@@ -51,6 +51,17 @@ ratify sign .
 
 This creates a signature catalog file (e.g., `dirname.sha256`) containing checksums for all files.
 
+#### Using a Custom Catalog File Location
+
+You can specify a custom location for the catalog file using the `--catalog-file` flag:
+
+```bash
+# Create catalog with custom filename/location
+ratify sign -a sha256 --catalog-file ./my-custom-catalog.sha256 .
+```
+
+**NOTE**: When using `--catalog-file`, you must specify the algorithm explicitly with `-a/--algo`
+
 ### Verifying Files
 
 Verify the integrity of files against their signatures:
@@ -60,6 +71,21 @@ ratify test .
 ```
 
 Ratify will check all files against the catalog and report any discrepancies.
+
+#### Using a Custom Catalog File
+
+When using a custom catalog file location, specify the same file for verification:
+
+```bash
+# Test using custom catalog file
+ratify test --catalog-file ./my-custom-catalog.sha256 .
+
+# Algorithm is auto-detected from file extension
+ratify test --catalog-file checksums/backup.sha256 /path/to/directory
+
+# If algorithm detection fails, specify explicitly
+ratify test -a sha256 --catalog-file /tmp/custom-signatures .
+```
 
 ## 🔧 Usage
 
@@ -71,6 +97,17 @@ Ratify will check all files against the catalog and report any discrepancies.
 | `test` | Verify files against an existing catalog |
 | `update` | Interactively update checksums for changed files |
 | `list-algos` | Show all available hash algorithms |
+
+### Common Flags
+
+| Flag | Description | Applies to |
+|------|-------------|-----------|
+| `-a, --algo <ALGORITHM>` | Specify hash algorithm explicitly | `sign`, `test`, `update` |
+| `--catalog-file <PATH>` | Use custom catalog file location instead of default | `sign`, `test`, `update` |
+| `-v, --verbose` | Increase verbosity (use multiple times for more detail) | All commands |
+| `--report <FORMAT>` | Generate report in specified format (plain/json) | `test` |
+| `--report-filename <FILE>` | Write report to file instead of stderr | `test` |
+| `--confirm` | Auto-confirm all updates without prompting | `update` |
 
 ### Supported Hash Algorithms
 
@@ -115,6 +152,9 @@ ratify sign ~/documents  # Uses blake3 from config
 
 # Recursive signing (default behavior)
 ratify sign -a sha256 -r /path/to/directory
+
+# Custom catalog file location
+ratify sign -a sha256 --catalog-file /backup/checksums.sha256 ~/documents
 ```
 
 #### Verification and Reporting
@@ -128,6 +168,12 @@ ratify test --report json --report-filename verification_report.json /path/to/di
 
 # Specify algorithm explicitly
 ratify test -a sha256 /path/to/directory
+
+# Use custom catalog file
+ratify test --catalog-file /backup/checksums.sha256 ~/documents
+
+# Custom catalog with explicit algorithm (if auto-detection fails)
+ratify test -a sha256 --catalog-file /tmp/custom-signatures ~/documents
 ```
 
 #### Managing File Changes
@@ -138,6 +184,12 @@ ratify update /path/to/directory
 
 # Update with specific algorithm
 ratify update -a sha256 /path/to/directory
+
+# Update using custom catalog file
+ratify update --catalog-file /backup/checksums.sha256 ~/documents
+
+# Auto-confirm all changes
+ratify update --confirm --catalog-file /backup/checksums.sha256 ~/documents
 ```
 
 ### Interactive Update Mode
@@ -182,6 +234,10 @@ ratify sign -a blake3 ~/important_files
 
 # Verify after restore
 ratify test ~/important_files
+
+# Use custom catalog location for backups
+ratify sign -a blake3 --catalog-file /backup/metadata/checksums.blake3 ~/important_files
+ratify test --catalog-file /backup/metadata/checksums.blake3 ~/important_files
 ```
 
 ### Software Distribution
@@ -194,6 +250,11 @@ ratify sign -a sha256 ./release_v1.0
 
 # Users can verify download integrity
 ratify test ./downloaded_release
+
+# Distribute catalog separately for security
+ratify sign -a sha256 --catalog-file ../release_v1.0_checksums.sha256 ./release_v1.0
+# Users verify with:
+ratify test --catalog-file ../release_v1.0_checksums.sha256 ./downloaded_release
 ```
 
 ### Ongoing File Monitoring
@@ -209,6 +270,10 @@ ratify test /etc/configs
 
 # Update authorized changes
 ratify update /etc/configs
+
+# Store catalog in secure location
+ratify sign -a sha256 --catalog-file /secure/etc-configs.sha256 /etc/configs
+ratify test --catalog-file /secure/etc-configs.sha256 /etc/configs
 ```
 
 ## 🔍 Understanding Output
