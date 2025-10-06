@@ -192,7 +192,10 @@ pub struct Catalog {
 }
 
 impl Catalog {
-    pub fn populate(&mut self) -> anyhow::Result<()> {
+    pub fn populate_with_progress(
+        &mut self,
+        progress_bar: Option<crate::progress::ProgressBar>,
+    ) -> anyhow::Result<()> {
         let mut new_entries = BTreeMap::new();
         let mut old_entries = Arc::new(std::mem::take(&mut self.entries));
 
@@ -226,14 +229,46 @@ impl Catalog {
                 move |(_, relpath)| !old_entries.contains_key(relpath)
             });
         let metadata = self.metadata.clone();
-        for result in crate::parallel::for_each(iterator, move |res| {
-            res.and_then(|(entry, relative_path)| {
-                checksum_entry(metadata.algo, entry, relative_path)
+
+        let results_iter = if let Some(ref bar) = progress_bar {
+            let discovery_bar = bar.clone();
+            let progress_bar = progress_bar.clone();
+            crate::parallel::for_each_with_discovery_callback(
+                iterator,
+                move |res| {
+                    let result = res.and_then(|(entry, relative_path)| {
+                        checksum_entry(metadata.algo, entry, relative_path)
+                    });
+                    if let Some(ref bar) = progress_bar {
+                        bar.notify_record_processed(result.as_ref().map(|(size, _, _)| *size).ok());
+                    }
+                    result
+                },
+                Some(Box::new(move || {
+                    discovery_bar.notify_file_discovered();
+                })),
+            )
+        } else {
+            crate::parallel::for_each(iterator, move |res| {
+                res.and_then(|(entry, relative_path)| {
+                    checksum_entry(metadata.algo, entry, relative_path)
+                })
             })
-        }) {
-            let (entry, relative_filename, signature) = result?;
+        };
+
+        let results_iter = if let Some(ref bar) = progress_bar {
+            let bar_clone = bar.clone();
+            results_iter.with_total_callback(move |total| {
+                bar_clone.set_length(total);
+            })
+        } else {
+            results_iter
+        };
+
+        for result in results_iter {
+            let (_, relative_filename, signature) = result?;
             let prev = new_entries.insert(relative_filename, signature);
-            assert!(prev.is_none(), "Entry {entry:?} was already in catalog!")
+            assert!(prev.is_none(), "Entry was already in catalog!")
         }
 
         assert!(self.entries.is_empty());

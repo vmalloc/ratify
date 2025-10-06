@@ -1,25 +1,46 @@
+use std::sync::Arc;
 use std::thread::JoinHandle;
 
-pub(crate) fn for_each<I, F, R, T>(iterator: I, handler: F) -> impl Iterator<Item = R>
+pub(crate) fn for_each<I, F, R, T>(iterator: I, handler: F) -> ResultsIterator<R>
 where
     I: Iterator<Item = T> + Send + 'static,
     R: Send + 'static,
     F: Fn(T) -> R + Send + Clone + 'static,
     T: Send + 'static,
 {
-    let (entries_sender, entries_receiver) = crossbeam_channel::bounded(num_cpus::get() * 4);
+    for_each_with_discovery_callback(iterator, handler, None)
+}
 
+pub(crate) fn for_each_with_discovery_callback<I, F, R, T>(
+    iterator: I,
+    handler: F,
+    discovery_callback: Option<Box<dyn Fn() + Send + Sync>>,
+) -> ResultsIterator<R>
+where
+    I: Iterator<Item = T> + Send + 'static,
+    R: Send + 'static,
+    F: Fn(T) -> R + Send + Clone + 'static,
+    T: Send + 'static,
+{
+    let (entries_sender, entries_receiver) = crossbeam_channel::unbounded();
     let (results_sender, results_receiver) = crossbeam_channel::unbounded();
+    let (total_sender, total_receiver) = crossbeam_channel::bounded(1);
+
+    let discovery_callback = discovery_callback.map(Arc::new);
 
     let producer = std::thread::spawn(move || {
         let mut size = 0;
         for entry in iterator {
             size += 1;
+            if let Some(ref callback) = discovery_callback {
+                callback();
+            }
             if entries_sender.send(entry).is_err() {
                 log::debug!("Entries sender channel closed. Closing producer");
                 break;
             }
         }
+        let _ = total_sender.send(size);
         size
     });
 
@@ -37,23 +58,37 @@ where
     }
     drop(results_sender);
 
-    ResultsIterator::new(producer, results_receiver)
+    ResultsIterator::new(producer, results_receiver, total_receiver)
 }
 
 pub struct ResultsIterator<R> {
-    join_handle: Option<JoinHandle<usize>>,
     total: Option<usize>,
     receiver: crossbeam_channel::Receiver<R>,
+    total_receiver: crossbeam_channel::Receiver<usize>,
     received: usize,
+    on_total_discovered: Option<Box<dyn FnOnce(usize) + Send>>,
 }
 impl<R> ResultsIterator<R> {
-    fn new(join_handle: JoinHandle<usize>, receiver: crossbeam_channel::Receiver<R>) -> Self {
+    fn new(
+        _join_handle: JoinHandle<usize>,
+        receiver: crossbeam_channel::Receiver<R>,
+        total_receiver: crossbeam_channel::Receiver<usize>,
+    ) -> Self {
         Self {
-            join_handle: Some(join_handle),
             total: None,
             receiver,
+            total_receiver,
             received: 0,
+            on_total_discovered: None,
         }
+    }
+
+    pub fn with_total_callback<F>(mut self, callback: F) -> Self
+    where
+        F: FnOnce(usize) + Send + 'static,
+    {
+        self.on_total_discovered = Some(Box::new(callback));
+        self
     }
 }
 
@@ -61,9 +96,13 @@ impl<R> Iterator for ResultsIterator<R> {
     type Item = R;
 
     fn next(&mut self) -> Option<Self::Item> {
-        if let Some(handle) = self.join_handle.take() {
-            if handle.is_finished() {
-                self.total.replace(handle.join().unwrap());
+        // Check if we received the total count
+        if self.total.is_none() {
+            if let Ok(total) = self.total_receiver.try_recv() {
+                self.total.replace(total);
+                if let Some(callback) = self.on_total_discovered.take() {
+                    callback(total);
+                }
             }
         }
 
@@ -73,8 +112,34 @@ impl<R> Iterator for ResultsIterator<R> {
             }
         }
 
-        // we either didn't finish, or we are still missing our total
-        self.receiver.recv().ok()
+        // Get the next result
+        match self.receiver.recv().ok() {
+            Some(item) => {
+                self.received += 1;
+                // Check again for total after receiving an item
+                if self.total.is_none() {
+                    if let Ok(total) = self.total_receiver.try_recv() {
+                        self.total.replace(total);
+                        if let Some(callback) = self.on_total_discovered.take() {
+                            callback(total);
+                        }
+                    }
+                }
+                Some(item)
+            }
+            None => {
+                // No more results, but check one last time for total
+                if self.total.is_none() {
+                    if let Ok(total) = self.total_receiver.try_recv() {
+                        self.total.replace(total);
+                        if let Some(callback) = self.on_total_discovered.take() {
+                            callback(total);
+                        }
+                    }
+                }
+                None
+            }
+        }
     }
 }
 
