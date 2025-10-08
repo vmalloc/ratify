@@ -4,39 +4,36 @@ use indicatif::{HumanBytes, ProgressDrawTarget, ProgressStyle};
 
 const SIZE_UPDATE_FREQ: std::time::Duration = std::time::Duration::from_secs(3);
 
+const PROGRESS_BAR_TEMPLATE: &str =
+    "[{elapsed_precise}] {bar:40.cyan/blue} {prefix} {pos:>7}/{len:7} {msg}";
+const SPINNER_TEMPLATE: &str =
+    "[{elapsed_precise}] {spinner:.cyan/blue} {prefix} {pos:>7}/{prefix}+ {msg}";
+
 #[derive(Clone)]
 pub struct ProgressBar {
     bar: Arc<indicatif::ProgressBar>,
     size: Arc<AtomicU64>,
     discovered_count: Arc<AtomicU64>,
+    description: &'static str,
 }
 
 impl ProgressBar {
-    pub fn new(len: Option<usize>) -> Self {
+    pub fn new_with_description(len: Option<usize>, description: &'static str) -> Self {
         let bar = match len {
             Some(length) => {
                 let bar = indicatif::ProgressBar::new(length.try_into().unwrap());
-                bar.set_style(
-                    ProgressStyle::with_template(
-                        "[{elapsed_precise}] {bar:40.cyan/blue} {pos:>7}/{len:7} {msg}",
-                    )
-                    .unwrap(),
-                );
+                bar.set_style(ProgressStyle::with_template(PROGRESS_BAR_TEMPLATE).unwrap());
                 bar
             }
             None => {
                 let bar = indicatif::ProgressBar::new_spinner();
-                bar.set_style(
-                    ProgressStyle::with_template(
-                        "[{elapsed_precise}] {spinner:.cyan/blue} {pos:>7}/{prefix}+ {msg}",
-                    )
-                    .unwrap(),
-                );
+                bar.set_style(ProgressStyle::with_template(SPINNER_TEMPLATE).unwrap());
                 bar
             }
         };
 
         bar.set_draw_target(ProgressDrawTarget::stderr_with_hz(5));
+        bar.set_prefix(description);
         let bar = Arc::new(bar);
         let size = Arc::new(AtomicU64::default());
         let discovered_count = Arc::new(AtomicU64::default());
@@ -73,17 +70,15 @@ impl ProgressBar {
             bar,
             size,
             discovered_count,
+            description,
         }
     }
 
     pub fn set_length(&self, len: usize) {
         self.bar.set_length(len.try_into().unwrap());
-        self.bar.set_style(
-            ProgressStyle::with_template(
-                "[{elapsed_precise}] {bar:40.cyan/blue} {pos:>7}/{len:7} {msg}",
-            )
-            .unwrap(),
-        );
+        self.bar
+            .set_style(ProgressStyle::with_template(PROGRESS_BAR_TEMPLATE).unwrap());
+        self.bar.set_prefix(self.description);
     }
 
     pub fn notify_file_discovered(&self) {
@@ -92,7 +87,8 @@ impl ProgressBar {
         let count = self
             .discovered_count
             .load(std::sync::atomic::Ordering::Relaxed);
-        self.bar.set_prefix(count.to_string());
+        self.bar
+            .set_prefix(format!("{} {}", self.description, count));
     }
 
     pub fn notify_record_processed(&self, record_size: Option<u64>) {
