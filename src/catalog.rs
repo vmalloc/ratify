@@ -20,6 +20,14 @@ pub struct Directory {
 }
 
 impl Directory {
+    pub fn from_params(path: impl Into<PathBuf>, catalog_file: Option<PathBuf>) -> anyhow::Result<Self> {
+        if let Some(catalog_file) = catalog_file {
+            Self::with_catalog_file(path, catalog_file)
+        } else {
+            Self::new(path)
+        }
+    }
+
     pub fn new(path: impl Into<PathBuf>) -> anyhow::Result<Self> {
         let path = path.into();
         let path = std::fs::canonicalize(&path)
@@ -375,12 +383,18 @@ impl Catalog {
         &self.directory
     }
 
-    pub(crate) fn into_iter(self) -> impl Iterator<Item = Entry> {
+}
+
+impl IntoIterator for Catalog {
+    type Item = Entry;
+    type IntoIter = Box<dyn Iterator<Item = Entry> + Send>;
+
+    fn into_iter(self) -> Self::IntoIter {
         let root_path = self.directory.path;
 
-        self.entries.into_iter().map(move |(subpath, hash)| Entry {
+        Box::new(self.entries.into_iter().map(move |(subpath, hash)| Entry {
             path: Arc::new(root_path.as_path().join(subpath).assume_canonical()),
             hash,
-        })
+        }))
     }
 }

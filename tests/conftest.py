@@ -62,7 +62,7 @@ class Sigfile:
             entries = []
             for line in f:
                 signature, relpath = line.strip().split(" *", 1)
-                entries.append(Entry(self.path, relpath, signature))
+                entries.append(Entry(self.path.parent, relpath, signature))
             return entries
 
     def assert_all_files_contained(self, root, *, allow_unknown=False):

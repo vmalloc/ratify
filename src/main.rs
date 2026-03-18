@@ -183,11 +183,7 @@ fn load_and_verify_catalog(
 }
 
 fn create_catalog(params: SignParams, config: &config::Config) -> anyhow::Result<()> {
-    let directory = if let Some(catalog_file) = params.catalog_file {
-        catalog::Directory::with_catalog_file(&params.path, catalog_file)?
-    } else {
-        catalog::Directory::new(&params.path)?
-    };
+    let directory = catalog::Directory::from_params(&params.path, params.catalog_file)?;
 
     let algo = params.algo.or(config.default_sign_algo).ok_or_else(|| {
         anyhow::format_err!(
@@ -219,11 +215,7 @@ fn create_catalog(params: SignParams, config: &config::Config) -> anyhow::Result
 
 fn test_catalog(params: TestParams) -> anyhow::Result<()> {
     let start = std::time::Instant::now();
-    let directory = if let Some(catalog_file) = params.catalog_file {
-        catalog::Directory::with_catalog_file(&params.path, catalog_file)?
-    } else {
-        catalog::Directory::new(&params.path)?
-    };
+    let directory = catalog::Directory::from_params(&params.path, params.catalog_file)?;
 
     let report = load_and_verify_catalog(directory, params.algo, &params.path)?.report;
 
@@ -233,7 +225,6 @@ fn test_catalog(params: TestParams) -> anyhow::Result<()> {
             std::fs::OpenOptions::new()
                 .create_new(true)
                 .write(true)
-                .truncate(true)
                 .open(path)
                 .context("Failed opening report file")?,
         ))
@@ -259,39 +250,6 @@ enum UpdateAction {
     Update,
     UpdateSubdirectory,
     UpdateAll,
-}
-
-fn output_status_line_with_color(
-    writer: &mut dyn WriteColor,
-    path: &std::path::Path,
-    status: &reporting::EntryStatus,
-) -> anyhow::Result<()> {
-    write!(writer, "[")?;
-
-    let mut failed_spec = ColorSpec::new();
-    failed_spec
-        .set_fg(Some(Color::Black))
-        .set_bg(Some(Color::Red));
-    let mut missing_spec = ColorSpec::new();
-    missing_spec.set_fg(Some(Color::Red));
-    let mut unknown_spec = ColorSpec::new();
-    unknown_spec.set_fg(Some(Color::Yellow));
-
-    let color_spec = match status {
-        reporting::EntryStatus::Ok => None,
-        reporting::EntryStatus::VerificationError => Some(&failed_spec),
-        reporting::EntryStatus::Missing => Some(&missing_spec),
-        reporting::EntryStatus::Unknown => Some(&unknown_spec),
-    };
-
-    if let Some(spec) = &color_spec {
-        writer.set_color(spec)?;
-    }
-
-    write!(writer, "{}", status.short_name())?;
-    writer.reset()?;
-    writeln!(writer, "] {path:?}")?;
-    Ok(())
 }
 
 fn read_user_choice(writer: &mut dyn WriteColor) -> anyhow::Result<UpdateAction> {
@@ -366,11 +324,7 @@ fn confirm_updates(
 }
 
 fn update_catalog(params: UpdateParams) -> anyhow::Result<()> {
-    let directory = if let Some(catalog_file) = &params.catalog_file {
-        catalog::Directory::with_catalog_file(&params.path, catalog_file)?
-    } else {
-        catalog::Directory::new(&params.path)?
-    };
+    let directory = catalog::Directory::from_params(&params.path, params.catalog_file.clone())?;
 
     let verification = load_and_verify_catalog(directory, params.algo, &params.path)?;
     let report = verification.report;
@@ -387,21 +341,10 @@ fn update_catalog(params: UpdateParams) -> anyhow::Result<()> {
             }
         }
     } else {
-        let mut update_all = false;
         let mut processed_directories = HashSet::new();
-        let skip_all = false;
 
         for entry in report.entries() {
             if matches!(entry.status(), reporting::EntryStatus::Ok) {
-                continue;
-            }
-
-            if skip_all {
-                continue;
-            }
-
-            if update_all {
-                files_to_update.insert(entry.path());
                 continue;
             }
 
@@ -414,7 +357,7 @@ fn update_catalog(params: UpdateParams) -> anyhow::Result<()> {
             }
 
             println!();
-            output_status_line_with_color(&mut writer, entry.path(), entry.status())?;
+            reporting::output_status_line(&mut writer, entry.path(), entry.status())?;
 
             match entry.status() {
                 reporting::EntryStatus::VerificationError => {
@@ -460,16 +403,12 @@ fn update_catalog(params: UpdateParams) -> anyhow::Result<()> {
                     }
                 }
                 UpdateAction::UpdateAll => {
-                    files_to_update.insert(entry.path());
-                    update_all = true;
-                }
-            }
-        }
-
-        if update_all {
-            for entry in report.entries() {
-                if !matches!(entry.status(), reporting::EntryStatus::Ok) {
-                    files_to_update.insert(entry.path());
+                    for e in report.entries() {
+                        if !matches!(e.status(), reporting::EntryStatus::Ok) {
+                            files_to_update.insert(e.path());
+                        }
+                    }
+                    break;
                 }
             }
         }
@@ -484,11 +423,7 @@ fn update_catalog(params: UpdateParams) -> anyhow::Result<()> {
         return Ok(());
     }
 
-    let directory_for_update = if let Some(catalog_file) = &params.catalog_file {
-        catalog::Directory::with_catalog_file(&params.path, catalog_file)?
-    } else {
-        catalog::Directory::new(&params.path)?
-    };
+    let directory_for_update = catalog::Directory::from_params(&params.path, params.catalog_file)?;
     let mut catalog = directory_for_update.load(params.algo)?;
 
     for path in &files_to_update {

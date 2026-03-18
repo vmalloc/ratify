@@ -73,9 +73,10 @@ pub trait ReportFormatter {
     ) -> anyhow::Result<()>;
 }
 
-fn output_short_status_line(
+pub fn output_status_line(
     writer: &mut dyn termcolor::WriteColor,
-    entry: &ReportEntry,
+    path: &Path,
+    status: &EntryStatus,
 ) -> anyhow::Result<()> {
     write!(writer, "[")?;
 
@@ -88,7 +89,7 @@ fn output_short_status_line(
     let mut unknown_spec = ColorSpec::new();
     unknown_spec.set_fg(Some(Color::Yellow));
 
-    let color_spec = match &entry.status {
+    let color_spec = match status {
         EntryStatus::Ok => None,
         EntryStatus::VerificationError => Some(&failed_spec),
         EntryStatus::Missing => Some(&missing_spec),
@@ -99,9 +100,9 @@ fn output_short_status_line(
         writer.set_color(spec)?;
     }
 
-    write!(writer, "{}", entry.status.short_name())?;
+    write!(writer, "{}", status.short_name())?;
     writer.reset()?;
-    writeln!(writer, "] {:?}", entry.path())?;
+    writeln!(writer, "] {path:?}")?;
     Ok(())
 }
 
@@ -126,15 +127,15 @@ impl ReportFormatter for PlainFormatter {
                     num_ok += 1;
                 }
                 EntryStatus::VerificationError => {
-                    output_short_status_line(writer, entry)?;
+                    output_status_line(writer, entry.path(), &entry.status)?;
                     num_failed += 1
                 }
                 EntryStatus::Missing => {
-                    output_short_status_line(writer, entry)?;
+                    output_status_line(writer, entry.path(), &entry.status)?;
                     num_missing += 1
                 }
                 EntryStatus::Unknown => {
-                    output_short_status_line(writer, entry)?;
+                    output_status_line(writer, entry.path(), &entry.status)?;
                     num_unknown += 1;
                 }
             }

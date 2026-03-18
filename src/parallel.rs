@@ -1,5 +1,4 @@
 use std::sync::Arc;
-use std::thread::JoinHandle;
 
 pub(crate) fn for_each<I, F, R, T>(iterator: I, handler: F) -> ResultsIterator<R>
 where
@@ -28,7 +27,7 @@ where
 
     let discovery_callback = discovery_callback.map(Arc::new);
 
-    let producer = std::thread::spawn(move || {
+    std::thread::spawn(move || {
         let mut size = 0;
         for entry in iterator {
             size += 1;
@@ -58,7 +57,7 @@ where
     }
     drop(results_sender);
 
-    ResultsIterator::new(producer, results_receiver, total_receiver)
+    ResultsIterator::new(results_receiver, total_receiver)
 }
 
 pub struct ResultsIterator<R> {
@@ -70,7 +69,6 @@ pub struct ResultsIterator<R> {
 }
 impl<R> ResultsIterator<R> {
     fn new(
-        _join_handle: JoinHandle<usize>,
         receiver: crossbeam_channel::Receiver<R>,
         total_receiver: crossbeam_channel::Receiver<usize>,
     ) -> Self {
