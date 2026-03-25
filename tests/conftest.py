@@ -94,7 +94,7 @@ class Algorithm:
         return self.name().lower()
 
     def signature_filename(self, directory: pathlib.Path):
-        return f"{directory.name}.{self.name().lower()}"
+        return f"ratify-catalog.{self.name().lower()}"
 
     def signature_file(self, directory) -> Sigfile:
         path = directory / self.signature_filename(directory)
@@ -137,10 +137,12 @@ def algorithm(request):
 def cfv_sigfile(directory, algorithm):
     if isinstance(algorithm, Blake3Algorithm):
         pytest.skip("CFV does not support blake3 algorithm")
-    sigfile = algorithm.signature_file(directory)
+    # cfv creates files with the legacy <dirname>.<algo> naming convention
+    cfv_filename = f"{directory.name}.{algorithm.name().lower()}"
+    cfv_path = directory / cfv_filename
     subprocess.check_call(f"cfv -C -t {algorithm} -rr .", cwd=directory, shell=True)
-    assert sigfile.path.exists()
-    return sigfile
+    assert cfv_path.exists()
+    return Sigfile(cfv_path)
 
 
 class Report:

@@ -5,11 +5,13 @@ use md5::Md5;
 use sha1::Sha1;
 use sha2::Sha256;
 use sha2::Sha512;
-use std::path::Path;
+use std::path::{Path, PathBuf};
 use strum::{EnumIter, EnumString, IntoEnumIterator, IntoStaticStr};
 
 #[derive(
     Debug,
+    PartialEq,
+    Eq,
     IntoStaticStr,
     EnumString,
     EnumIter,
@@ -30,13 +32,26 @@ pub enum Algorithm {
 }
 
 impl Algorithm {
-    pub fn try_deduce_from_path(root: &Path) -> Option<Self> {
+    pub fn try_deduce_from_path(root: &Path) -> Option<(Self, PathBuf)> {
         let root_dir_name = root.file_name()?.to_string_lossy();
-        Self::iter().find(|variant| {
-            let path = root.join(format!("{root_dir_name}.{variant}"));
-            log::debug!("Searching for {path:?}...");
-            path.exists()
-        })
+        for variant in Self::iter() {
+            let ratify_path = root.join(format!("ratify-catalog.{variant}"));
+            log::debug!("Searching for {ratify_path:?}...");
+            if ratify_path.exists() {
+                return Some((variant, ratify_path));
+            }
+            let old_ratify_path = root.join(format!("ratify.{variant}"));
+            log::debug!("Searching for {old_ratify_path:?}...");
+            if old_ratify_path.exists() {
+                return Some((variant, old_ratify_path));
+            }
+            let legacy_path = root.join(format!("{root_dir_name}.{variant}"));
+            log::debug!("Searching for {legacy_path:?}...");
+            if legacy_path.exists() {
+                return Some((variant, legacy_path));
+            }
+        }
+        None
     }
 
     pub fn try_deduce_from_file(file_path: &Path) -> Option<Self> {

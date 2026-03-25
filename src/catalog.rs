@@ -70,11 +70,19 @@ impl Directory {
                     "Failed to detect algorithm from catalog file {custom_file:?}. Please specify algorithm explicitly using --algo"
                 ))?;
             (algo, custom_file.clone())
+        } else if let Some(algo) = algo {
+            let path = if let Some((_, legacy_path)) = Algorithm::try_deduce_from_path(self.path.as_path())
+                .filter(|(detected_algo, _)| *detected_algo == algo)
+            {
+                legacy_path.assume_canonical()
+            } else {
+                self.signature_file_path(algo)
+            };
+            (algo, path)
+        } else if let Some((algo, path)) = Algorithm::try_deduce_from_path(self.path.as_path()) {
+            (algo, path.assume_canonical())
         } else {
-            let algo = algo
-                .or_else(|| Algorithm::try_deduce_from_path(self.path.as_path()))
-                .ok_or_else(|| anyhow::format_err!("Failed to detect signature file"))?;
-            (algo, self.signature_file_path(algo))
+            anyhow::bail!("Failed to detect signature file");
         };
 
         log::debug!("Opening signature file {filename:?}...");
@@ -118,13 +126,7 @@ impl Directory {
     }
 
     fn signature_filename(&self, algo: Algorithm) -> String {
-        let abs_root = &self.path;
-        let file_name = abs_root
-            .as_path()
-            .file_name()
-            .map(|x| x.to_string_lossy())
-            .unwrap_or_else(|| "signatures".into());
-        format!("{file_name}.{algo}")
+        format!("ratify-catalog.{algo}")
     }
 
     pub fn path(&self) -> &Path {
