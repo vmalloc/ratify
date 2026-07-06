@@ -143,10 +143,20 @@ fn load_and_verify_catalog(
     path_param: &PathBuf,
 ) -> anyhow::Result<Verification> {
     let iterator = walkdir::WalkDir::new(directory.path());
+    let ignore_matcher = directory.load_ignore_matcher()?;
+    let root_path = directory.path().to_owned();
     let all_paths_thread = std::thread::spawn(move || {
         iterator
             .into_iter()
             .filter_ok(|entry| !entry.path().is_dir())
+            .filter_ok(move |entry| {
+                match pathdiff::diff_paths(entry.path(), &root_path) {
+                    Some(relpath) => {
+                        !catalog::is_ignored(&ignore_matcher, &relpath.to_string_lossy())
+                    }
+                    None => true,
+                }
+            })
             .map(|entry| {
                 entry
                     .context("Failed reading directory")
