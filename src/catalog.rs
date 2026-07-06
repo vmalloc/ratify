@@ -406,6 +406,30 @@ impl Entry {
         ))
     }
 
+    /// Checks only whether the entry's file exists on disk, without reading or
+    /// hashing its contents. Yields `Ok` when present and `Missing` otherwise.
+    pub(crate) fn verify_existence(&self) -> anyhow::Result<crate::reporting::ReportEntry> {
+        let exists = self
+            .path
+            .as_path()
+            .try_exists()
+            .with_context(|| format!("Failed checking existence of {:?}", self.path))?;
+
+        if !exists {
+            log::info!("{:?} is missing!", self.path);
+        }
+
+        Ok(crate::reporting::ReportEntry::new(
+            self.path.clone(),
+            0,
+            if exists {
+                EntryStatus::Ok
+            } else {
+                EntryStatus::Missing
+            },
+        ))
+    }
+
     pub fn path(&self) -> &Path {
         self.path.as_path()
     }
