@@ -361,11 +361,6 @@ impl Catalog {
 
         Ok(())
     }
-
-    #[allow(clippy::len_without_is_empty)]
-    pub fn len(&self) -> usize {
-        self.entries.len()
-    }
 }
 
 pub struct Entry {
@@ -407,26 +402,32 @@ impl Entry {
     }
 
     /// Checks only whether the entry's file exists on disk, without reading or
-    /// hashing its contents. Yields `Ok` when present and `Missing` otherwise.
+    /// hashing its contents. Yields `Ok` when a regular file is present and
+    /// `Missing` otherwise (including when the path was replaced by a directory
+    /// or other non-file). Metadata is resolved through symlinks, matching how
+    /// the hashing path opens the file.
     pub(crate) fn verify_existence(&self) -> anyhow::Result<crate::reporting::ReportEntry> {
-        let exists = self
-            .path
-            .as_path()
-            .try_exists()
-            .with_context(|| format!("Failed checking existence of {:?}", self.path))?;
-
-        if !exists {
-            log::info!("{:?} is missing!", self.path);
-        }
+        let status = match std::fs::metadata(self.path.as_path()) {
+            Ok(metadata) if metadata.is_file() => EntryStatus::Ok,
+            Ok(_) => {
+                log::info!("{:?} exists but is not a regular file!", self.path);
+                EntryStatus::Missing
+            }
+            Err(e) if e.kind() == std::io::ErrorKind::NotFound => {
+                log::info!("{:?} is missing!", self.path);
+                EntryStatus::Missing
+            }
+            Err(e) => {
+                return Err(e).with_context(|| {
+                    format!("Failed checking existence of {:?}", self.path)
+                });
+            }
+        };
 
         Ok(crate::reporting::ReportEntry::new(
             self.path.clone(),
             0,
-            if exists {
-                EntryStatus::Ok
-            } else {
-                EntryStatus::Missing
-            },
+            status,
         ))
     }
 
@@ -474,14 +475,14 @@ mod tests {
     use assert_fs::prelude::*;
 
     /// Builds a matcher from an ignore file written into a fresh temp directory.
+    /// The ignore file is read eagerly during `load_ignore_matcher`, and
+    /// matching relative paths never touches the filesystem, so the temp
+    /// directory can be dropped as soon as the matcher is built.
     fn matcher_from(contents: &str) -> ignore::gitignore::Gitignore {
         let temp = assert_fs::TempDir::new().unwrap();
         temp.child(IGNORE_FILE_NAME).write_str(contents).unwrap();
         let directory = Directory::new(temp.path()).unwrap();
         let matcher = directory.load_ignore_matcher().unwrap();
-        // Keep the temp dir alive for the duration of the matcher's use by
-        // leaking it; the process is short-lived (test) so this is harmless.
-        std::mem::forget(temp);
         std::sync::Arc::try_unwrap(matcher).unwrap_or_else(|arc| (*arc).clone())
     }
 

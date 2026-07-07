@@ -58,3 +58,26 @@ def test_existence_only_detects_new_file(directory, run, algorithm, report):
     data = report.load()
     assert {e["status"] for e in data["failed"]} == {"unknown"}
     assert any(Path(e["path"]).name == "new" for e in data["failed"])
+
+
+def test_existence_only_file_replaced_by_directory_is_missing(
+    directory, run, algorithm, report
+):
+    run(f"sign -a {algorithm} .", cwd=directory)
+
+    # Replace the file 'c' with a directory of the same name. The path still
+    # "exists", but it is no longer the regular file that was cataloged.
+    (directory / "c").unlink()
+    (directory / "c").mkdir()
+
+    with pytest.raises(subprocess.CalledProcessError):
+        run(
+            f"test -a {algorithm} . --existence-only "
+            f"--report json --report-filename {report.filename}",
+            cwd=directory,
+            stderr=subprocess.PIPE,
+        )
+
+    data = report.load()
+    assert {e["status"] for e in data["failed"]} == {"missing"}
+    assert any(Path(e["path"]).name == "c" for e in data["failed"])

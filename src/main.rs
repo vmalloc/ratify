@@ -151,17 +151,16 @@ fn load_and_verify_catalog(
     let iterator = walkdir::WalkDir::new(directory.path());
     let ignore_matcher = directory.load_ignore_matcher()?;
     let root_path = directory.path().to_owned();
+
+    let walk_matcher = ignore_matcher.clone();
+    let walk_root = root_path.clone();
     let all_paths_thread = std::thread::spawn(move || {
         iterator
             .into_iter()
             .filter_ok(|entry| !entry.path().is_dir())
-            .filter_ok(move |entry| {
-                match pathdiff::diff_paths(entry.path(), &root_path) {
-                    Some(relpath) => {
-                        !catalog::is_ignored(&ignore_matcher, &relpath.to_string_lossy())
-                    }
-                    None => true,
-                }
+            .filter_ok(move |entry| match pathdiff::diff_paths(entry.path(), &walk_root) {
+                Some(relpath) => !catalog::is_ignored(&walk_matcher, &relpath.to_string_lossy()),
+                None => true,
             })
             .map(|entry| {
                 entry
@@ -175,14 +174,40 @@ fn load_and_verify_catalog(
     let catalog_filename = catalog.metadata().signature_file_path().clone();
     let algo = catalog.metadata().algo();
 
+    // Partition out any catalog entries that now match a .ratify-ignore rule.
+    // These were signed before the rule was added; skipping them (with a
+    // warning) keeps ignore semantics consistent -- an ignored file is never
+    // verified and never flagged as unknown -- and points the user at
+    // re-signing.
+    let (entries, ignored_entries): (Vec<_>, Vec<_>) =
+        catalog.into_iter().partition(|entry| {
+            match pathdiff::diff_paths(entry.path(), &root_path) {
+                Some(relpath) => !catalog::is_ignored(&ignore_matcher, &relpath.to_string_lossy()),
+                None => true,
+            }
+        });
+
+    if !ignored_entries.is_empty() {
+        let mut writer = StandardStream::stderr(termcolor::ColorChoice::Auto);
+        writer.set_color(ColorSpec::new().set_fg(Some(Color::Yellow)))?;
+        for entry in &ignored_entries {
+            writeln!(
+                writer,
+                "Warning: catalog entry {:?} matches a .ratify-ignore rule; skipping it (re-sign to remove it from the catalog)",
+                entry.path()
+            )?;
+        }
+        writer.reset()?;
+    }
+
     let description = if existence_only {
         "Checking"
     } else {
         "Verifying"
     };
-    let bar = crate::progress::ProgressBar::new_with_description(Some(catalog.len()), description);
+    let bar = crate::progress::ProgressBar::new_with_description(Some(entries.len()), description);
 
-    let mut report = crate::parallel::for_each(catalog.into_iter(), move |entry| {
+    let mut report = crate::parallel::for_each(entries.into_iter(), move |entry| {
         let res = if existence_only {
             entry
                 .verify_existence()
