@@ -181,10 +181,27 @@ fn load_and_verify_catalog(
     // re-signing.
     let (entries, ignored_entries): (Vec<_>, Vec<_>) =
         catalog.into_iter().partition(|entry| {
-            match pathdiff::diff_paths(entry.path(), &root_path) {
-                Some(relpath) => !catalog::is_ignored(&ignore_matcher, &relpath.to_string_lossy()),
-                None => true,
-            }
+            let keep = match pathdiff::diff_paths(entry.path(), &root_path) {
+                Some(relpath) => {
+                    let ignored = catalog::is_ignored(&ignore_matcher, &relpath.to_string_lossy());
+                    log::debug!(
+                        "Ignore check: entry={:?} root={:?} relpath={:?} ignored={ignored}",
+                        entry.path(),
+                        root_path,
+                        relpath
+                    );
+                    !ignored
+                }
+                None => {
+                    log::debug!(
+                        "Ignore check: entry={:?} root={:?} diff_paths returned None; keeping",
+                        entry.path(),
+                        root_path
+                    );
+                    true
+                }
+            };
+            keep
         });
 
     if !ignored_entries.is_empty() {
