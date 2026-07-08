@@ -176,11 +176,11 @@ def test_unknown_files_warning(directory, run, algorithm, random_data_gen, repor
     assert entry["status"] == "unknown"
 
 
-def test_update_with_confirm_flag(directory, run, algorithm, random_data_gen):
-    """Test update command with --confirm flag (replaces old append functionality).
+def test_update_with_yes_flag(directory, run, algorithm, random_data_gen):
+    """Test update command with --yes flag (replaces old append functionality).
 
     This test was migrated from test_append.py and verifies that
-    'update --confirm' automatically adds new files to the catalog
+    'update --yes' automatically adds new files to the catalog
     without user interaction.
     """
     run(f"sign -a {algorithm} {directory}")
@@ -189,6 +189,6 @@ def test_update_with_confirm_flag(directory, run, algorithm, random_data_gen):
     catalog = algorithm.signature_file(directory)
     with catalog.path.open() as f:
         assert "new_file" not in f.read()
-    run(f"update --confirm {directory}")
+    run(f"update --yes {directory}")
     with catalog.path.open() as f:
         assert "new_file" in f.read()

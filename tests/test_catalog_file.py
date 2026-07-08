@@ -109,7 +109,7 @@ def test_update_with_custom_catalog_file(
     with test_file.open("wb") as f:
         f.write(random_data_gen())
 
-    run(f"update --confirm --catalog-file {custom_catalog} .", cwd=directory)
+    run(f"update --yes --catalog-file {custom_catalog} .", cwd=directory)
     run(f"test --catalog-file {custom_catalog} .", cwd=directory)
 
 
@@ -168,4 +168,4 @@ def test_catalog_file_in_subdirectory(directory, run, algorithm, custom_catalog_
     assert catalog_file.exists()
 
     run(f"test --catalog-file catalogs/backup.{algorithm} .", cwd=directory)
-    run(f"update --confirm --catalog-file catalogs/backup.{algorithm} .", cwd=directory)
+    run(f"update --yes --catalog-file catalogs/backup.{algorithm} .", cwd=directory)

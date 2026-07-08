@@ -73,9 +73,31 @@ struct UpdateParams {
     #[clap(long)]
     catalog_file: Option<PathBuf>,
 
-    /// automatically confirm all updates without prompting
+    /// automatically apply all updates without prompting
     #[clap(long)]
-    confirm: bool,
+    yes: bool,
+
+    /// only add new (unknown) files to the catalog; skip modified or missing entries
+    #[clap(long)]
+    new_only: bool,
+
+    #[clap(default_value = ".")]
+    path: PathBuf,
+}
+
+#[derive(Parser)]
+struct AppendParams {
+    /// algorithm to use
+    #[clap(short = 'a', long)]
+    algo: Option<Algorithm>,
+
+    /// path to the catalog file to use instead of the default location
+    #[clap(long)]
+    catalog_file: Option<PathBuf>,
+
+    /// automatically add all new files without prompting
+    #[clap(long)]
+    yes: bool,
 
     #[clap(default_value = ".")]
     path: PathBuf,
@@ -98,6 +120,11 @@ enum Command {
     Update {
         #[clap(flatten)]
         params: UpdateParams,
+    },
+    /// Adds new (unknown) files to the catalog without modifying existing entries
+    Append {
+        #[clap(flatten)]
+        params: AppendParams,
     },
     /// Lists available signature (hashing) algorithms
     ListAlgos,
@@ -405,9 +432,17 @@ fn update_catalog(params: UpdateParams) -> anyhow::Result<()> {
 
     let mut files_to_update = HashSet::new();
 
-    if params.confirm {
+    let dominated_status = |status: &reporting::EntryStatus| -> bool {
+        if params.new_only {
+            matches!(status, reporting::EntryStatus::Unknown)
+        } else {
+            !matches!(status, reporting::EntryStatus::Ok)
+        }
+    };
+
+    if params.yes {
         for entry in report.entries() {
-            if !matches!(entry.status(), reporting::EntryStatus::Ok) {
+            if dominated_status(entry.status()) {
                 files_to_update.insert(entry.path());
             }
         }
@@ -415,7 +450,7 @@ fn update_catalog(params: UpdateParams) -> anyhow::Result<()> {
         let mut processed_directories = HashSet::new();
 
         for entry in report.entries() {
-            if matches!(entry.status(), reporting::EntryStatus::Ok) {
+            if !dominated_status(entry.status()) {
                 continue;
             }
 
@@ -464,7 +499,7 @@ fn update_catalog(params: UpdateParams) -> anyhow::Result<()> {
                     }
 
                     for other_entry in report.entries() {
-                        if matches!(other_entry.status(), reporting::EntryStatus::Ok) {
+                        if !dominated_status(other_entry.status()) {
                             continue;
                         }
 
@@ -475,7 +510,7 @@ fn update_catalog(params: UpdateParams) -> anyhow::Result<()> {
                 }
                 UpdateAction::UpdateAll => {
                     for e in report.entries() {
-                        if !matches!(e.status(), reporting::EntryStatus::Ok) {
+                        if dominated_status(e.status()) {
                             files_to_update.insert(e.path());
                         }
                     }
@@ -485,7 +520,7 @@ fn update_catalog(params: UpdateParams) -> anyhow::Result<()> {
         }
     }
 
-    if !params.confirm && !confirm_updates(&files_to_update, &mut writer)? {
+    if !params.yes && !confirm_updates(&files_to_update, &mut writer)? {
         if !files_to_update.is_empty() {
             writer.set_color(ColorSpec::new().set_fg(Some(Color::Yellow)))?;
             println!("Update cancelled.");
@@ -570,6 +605,13 @@ fn entry_point() -> anyhow::Result<()> {
 
         Command::Test { params } => test_catalog(params),
         Command::Update { params } => update_catalog(params),
+        Command::Append { params } => update_catalog(UpdateParams {
+            algo: params.algo,
+            catalog_file: params.catalog_file,
+            yes: params.yes,
+            new_only: true,
+            path: params.path,
+        }),
         Command::ListAlgos => {
             for algo in Algorithm::iter() {
                 println!("{algo}");
