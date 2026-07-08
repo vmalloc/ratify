@@ -9,8 +9,10 @@
 
 - **Multiple Hash Algorithms**: Support for MD5, SHA-1, SHA-256, SHA-512, and BLAKE3
 - **Directory-Wide Verification**: Recursively sign and verify entire directory trees
+- **File Exclusion**: Skip files from signing and verification with a gitignore-style `.ratify-ignore` file
 - **Interactive Updates**: Selectively update checksums for changed files
 - **Batch Operations**: Efficiently process large numbers of files with parallel execution
+- **Existence-Only Checks**: Quickly find missing or new files without reading their contents
 - **Progress Tracking**: Real-time progress bars for long-running operations
 - **Flexible Reporting**: Generate verification reports in plain text or JSON format
 - **Cross-Compatible**: Works with existing `cfv` signature files
@@ -49,7 +51,7 @@ Or, set up a default algorithm in `~/.config/ratify.toml` and omit the flag:
 ratify sign .
 ```
 
-This creates a signature catalog file (e.g., `dirname.sha256`) containing checksums for all files.
+This creates a signature catalog file (e.g., `ratify-catalog.sha256`) in the directory, containing checksums for all files. For backward compatibility, ratify will also read catalogs named `ratify.<algo>` or `<dirname>.<algo>` (such as those written by `cfv`) if present.
 
 #### Using a Custom Catalog File Location
 
@@ -60,7 +62,7 @@ You can specify a custom location for the catalog file using the `--catalog-file
 ratify sign -a sha256 --catalog-file ./my-custom-catalog.sha256 .
 ```
 
-**NOTE**: When using `--catalog-file`, you must specify the algorithm explicitly with `-a/--algo`
+**NOTE**: When using `--catalog-file`, the algorithm is inferred from the file's extension when possible (and, for `sign`, may come from `default_sign_algo` in your config). Specify `-a/--algo` explicitly if detection fails.
 
 ### Verifying Files
 
@@ -87,6 +89,41 @@ ratify test --catalog-file checksums/backup.sha256 /path/to/directory
 ratify test -a sha256 --catalog-file /tmp/custom-signatures .
 ```
 
+### Excluding Files with `.ratify-ignore`
+
+Place an optional `.ratify-ignore` file at the root of the directory you sign to exclude files from both signing and verification. It uses gitignore-style syntax:
+
+- Bare names and globs (e.g. `*.log`, `cache`) match at **any depth** in the tree.
+- A leading `/` **anchors** a pattern to the signed directory's root (e.g. `/build` matches only the top-level `build`, not `src/build`).
+- Blank lines and `#` comments are ignored.
+- The `.ratify-ignore` file itself is always excluded and never signed.
+
+For example:
+
+```gitignore
+# Ignore all log files, anywhere in the tree
+*.log
+
+# Ignore a build directory at the root only
+/build
+
+# Ignore a specific file
+secrets.env
+```
+
+Ignored files are omitted from the catalog during `sign`, and during `test`/`update` they are neither verified nor reported as `[UNKNOWN]`. If a file that is already in the catalog later becomes ignored, it is skipped during verification with a warning suggesting you re-sign to drop it from the catalog.
+
+### Checking Existence Only
+
+To quickly find missing or new files without reading and hashing every file, pass `--existence-only` to `test`. Cataloged files are checked only for their presence on disk (a path that no longer exists, or was replaced by a non-file such as a directory, is reported as `[MISSING]`), and new files are still reported as `[UNKNOWN]`:
+
+```bash
+# Fast inventory check: find missing or new files without hashing
+ratify test --existence-only /path/to/directory
+```
+
+Note that `--existence-only` cannot detect content changes, since it never reads file contents.
+
 ## 🔧 Usage
 
 ### Available Commands
@@ -104,9 +141,11 @@ ratify test -a sha256 --catalog-file /tmp/custom-signatures .
 |------|-------------|-----------|
 | `-a, --algo <ALGORITHM>` | Specify hash algorithm explicitly | `sign`, `test`, `update` |
 | `--catalog-file <PATH>` | Use custom catalog file location instead of default | `sign`, `test`, `update` |
-| `-v, --verbose` | Increase verbosity (use multiple times for more detail) | All commands |
+| `-v, --verbose` | Increase verbosity (use multiple times for more detail); global flag, place it before the subcommand | All commands |
+| `--overwrite` | Overwrite an existing catalog file without prompting | `sign` |
 | `--report <FORMAT>` | Generate report in specified format (plain/json) | `test` |
 | `--report-filename <FILE>` | Write report to file instead of stderr | `test` |
+| `--existence-only` | Only check that cataloged files exist; skip reading/hashing (fast way to find missing/new files) | `test` |
 | `--confirm` | Auto-confirm all updates without prompting | `update` |
 
 ### Supported Hash Algorithms
@@ -150,8 +189,11 @@ ratify sign -a sha256 ~/documents
 # With configuration file (default_sign_algo = "blake3")
 ratify sign ~/documents  # Uses blake3 from config
 
-# Recursive signing (default behavior)
-ratify sign -a sha256 -r /path/to/directory
+# Signing always recurses into subdirectories
+ratify sign -a sha256 /path/to/directory
+
+# Overwrite an existing catalog without the confirmation prompt
+ratify sign -a sha256 --overwrite /path/to/directory
 
 # Custom catalog file location
 ratify sign -a sha256 --catalog-file /backup/checksums.sha256 ~/documents
@@ -162,6 +204,9 @@ ratify sign -a sha256 --catalog-file /backup/checksums.sha256 ~/documents
 ```bash
 # Basic verification
 ratify test /path/to/directory
+
+# Fast check for missing/new files only (no hashing)
+ratify test --existence-only /path/to/directory
 
 # Generate a JSON report
 ratify test --report json --report-filename verification_report.json /path/to/directory
@@ -207,19 +252,21 @@ When you run `ratify update`, you'll be prompted for each file with discrepancie
 - **Directory (D)**: Update all files in this directory
 - **All (A)**: Update all remaining files with discrepancies
 
+After you've made your selections, ratify lists the files it's about to update and asks for a final confirmation (`Proceed with updates? [y/N]`) before writing the catalog. Pass `--confirm` to skip both the per-file prompts and this final confirmation.
+
 ### Verbosity Control
 
-Control output detail with the `-v` flag:
+Control output detail with the `-v` flag. Verbosity is a global flag, so it must be placed **before** the subcommand:
 
 ```bash
 # Standard output
 ratify test .
 
 # Verbose output
-ratify test -v .
+ratify -v test .
 
 # Debug output
-ratify test -vv .
+ratify -vv test .
 ```
 
 ## 📋 Common Use Cases
