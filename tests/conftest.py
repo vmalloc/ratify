@@ -29,7 +29,15 @@ def run(binary):
     def run_func(cmdline, **kw):
         cmdline = f"{binary} -vvv {cmdline}"
         print("*** Running", cmdline)
-        return subprocess.check_output(cmdline, shell=True, **kw)
+        kw.setdefault("stderr", subprocess.STDOUT)
+        try:
+            return subprocess.check_output(cmdline, shell=True, **kw)
+        except subprocess.CalledProcessError as e:
+            for label, data in (("stdout", e.output), ("stderr", e.stderr)):
+                if data:
+                    text = data.decode(errors="replace") if isinstance(data, bytes) else data
+                    print(f"*** captured {label} on failure:\n{text}")
+            raise
 
     return run_func
 

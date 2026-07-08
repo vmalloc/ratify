@@ -14,6 +14,20 @@ use crate::{
     utils::{CanonicalPath, Canonicalizeable},
 };
 
+/// Name of the optional ignore file at the root of a signed directory.
+pub(crate) const IGNORE_FILE_NAME: &str = ".ratify-ignore";
+
+/// Returns whether the given directory-relative path is excluded by the matcher.
+///
+/// Uses `matched_path_or_any_parents` (rather than `matched`) so directory-style
+/// patterns (e.g. `/build/`) still exclude files beneath them, since directories
+/// are filtered out of the walk before reaching this check.
+pub(crate) fn is_ignored(matcher: &ignore::gitignore::Gitignore, relpath: &str) -> bool {
+    matcher
+        .matched_path_or_any_parents(Path::new(relpath), false)
+        .is_ignore()
+}
+
 pub struct Directory {
     path: CanonicalPath<PathBuf>,
     catalog_path: Option<CanonicalPath<PathBuf>>,
@@ -133,6 +147,29 @@ impl Directory {
         self.path.as_path()
     }
 
+    /// Builds a gitignore-style matcher rooted at this directory, loading an
+    /// optional `.ratify-ignore` file from the directory root. The ignore file
+    /// itself is always excluded so it is never signed or reported as unknown.
+    pub(crate) fn load_ignore_matcher(&self) -> anyhow::Result<Arc<ignore::gitignore::Gitignore>> {
+        let mut builder = ignore::gitignore::GitignoreBuilder::new(self.path());
+
+        builder
+            .add_line(None, IGNORE_FILE_NAME)
+            .context("Failed adding self-exclusion for ignore file")?;
+
+        let ignore_file = self.path().join(IGNORE_FILE_NAME);
+        if ignore_file.exists() {
+            if let Some(err) = builder.add(&ignore_file) {
+                return Err(err)
+                    .with_context(|| format!("Failed parsing ignore file {ignore_file:?}"));
+            }
+        }
+
+        let matcher = builder.build().context("Failed building ignore matcher")?;
+
+        Ok(Arc::new(matcher))
+    }
+
     pub fn get_catalog_file_path(&self, algo: Algorithm) -> CanonicalPath<PathBuf> {
         if let Some(custom_file) = &self.catalog_path {
             custom_file.clone()
@@ -209,6 +246,8 @@ impl Catalog {
         let mut new_entries = BTreeMap::new();
         let mut old_entries = Arc::new(std::mem::take(&mut self.entries));
 
+        let ignore_matcher = self.directory.load_ignore_matcher()?;
+
         let iterator = walkdir::WalkDir::new(self.directory.path())
             .into_iter()
             .filter_ok(|entry| !entry.path().is_dir())
@@ -233,6 +272,10 @@ impl Catalog {
                         }
                     })
                 }
+            })
+            .filter_ok({
+                let ignore_matcher = ignore_matcher.clone();
+                move |(_, relpath)| !is_ignored(&ignore_matcher, relpath)
             })
             .filter_ok({
                 let old_entries = old_entries.clone();
@@ -318,11 +361,6 @@ impl Catalog {
 
         Ok(())
     }
-
-    #[allow(clippy::len_without_is_empty)]
-    pub fn len(&self) -> usize {
-        self.entries.len()
-    }
 }
 
 pub struct Entry {
@@ -363,6 +401,36 @@ impl Entry {
         ))
     }
 
+    /// Checks only whether the entry's file exists on disk, without reading or
+    /// hashing its contents. Yields `Ok` when a regular file is present and
+    /// `Missing` otherwise (including when the path was replaced by a directory
+    /// or other non-file). Metadata is resolved through symlinks, matching how
+    /// the hashing path opens the file.
+    pub(crate) fn verify_existence(&self) -> anyhow::Result<crate::reporting::ReportEntry> {
+        let status = match std::fs::metadata(self.path.as_path()) {
+            Ok(metadata) if metadata.is_file() => EntryStatus::Ok,
+            Ok(_) => {
+                log::info!("{:?} exists but is not a regular file!", self.path);
+                EntryStatus::Missing
+            }
+            Err(e) if e.kind() == std::io::ErrorKind::NotFound => {
+                log::info!("{:?} is missing!", self.path);
+                EntryStatus::Missing
+            }
+            Err(e) => {
+                return Err(e).with_context(|| {
+                    format!("Failed checking existence of {:?}", self.path)
+                });
+            }
+        };
+
+        Ok(crate::reporting::ReportEntry::new(
+            self.path.clone(),
+            0,
+            status,
+        ))
+    }
+
     pub fn path(&self) -> &Path {
         self.path.as_path()
     }
@@ -398,5 +466,78 @@ impl IntoIterator for Catalog {
             path: Arc::new(root_path.as_path().join(subpath).assume_canonical()),
             hash,
         }))
+    }
+}
+
+#[cfg(test)]
+mod tests {
+    use super::{is_ignored, Directory, IGNORE_FILE_NAME};
+    use assert_fs::prelude::*;
+
+    /// Builds a matcher from an ignore file written into a fresh temp directory.
+    /// The ignore file is read eagerly during `load_ignore_matcher`, and
+    /// matching relative paths never touches the filesystem, so the temp
+    /// directory can be dropped as soon as the matcher is built.
+    fn matcher_from(contents: &str) -> ignore::gitignore::Gitignore {
+        let temp = assert_fs::TempDir::new().unwrap();
+        temp.child(IGNORE_FILE_NAME).write_str(contents).unwrap();
+        let directory = Directory::new(temp.path()).unwrap();
+        let matcher = directory.load_ignore_matcher().unwrap();
+        std::sync::Arc::try_unwrap(matcher).unwrap_or_else(|arc| (*arc).clone())
+    }
+
+    #[test]
+    fn bare_name_matches_any_depth() {
+        let matcher = matcher_from("1\n");
+        assert!(is_ignored(&matcher, "1"));
+        assert!(is_ignored(&matcher, "a/1"));
+        assert!(!is_ignored(&matcher, "2"));
+        assert!(!is_ignored(&matcher, "a/2"));
+    }
+
+    #[test]
+    fn glob_matches_any_depth() {
+        let matcher = matcher_from("*.txt\n");
+        assert!(is_ignored(&matcher, "x.txt"));
+        assert!(is_ignored(&matcher, "a/x.txt"));
+        assert!(!is_ignored(&matcher, "x.log"));
+        assert!(!is_ignored(&matcher, "a/x.log"));
+    }
+
+    #[test]
+    fn leading_slash_anchors_to_root_and_is_not_absolute() {
+        // "/a/1" is anchored to the directory root, NOT the filesystem root.
+        let matcher = matcher_from("/a/1\n");
+        assert!(is_ignored(&matcher, "a/1"));
+        // A same-named file deeper in the tree must NOT be excluded.
+        assert!(!is_ignored(&matcher, "sub/a/1"));
+        // The relative path is matched as-is (relative), never as an absolute
+        // "/a/1" against the real filesystem.
+        assert!(!is_ignored(&matcher, "b/1"));
+    }
+
+    #[test]
+    fn comments_and_blank_lines_are_ignored() {
+        let matcher = matcher_from("# a comment\n\n2\n");
+        assert!(is_ignored(&matcher, "2"));
+        // "# a comment" must not be treated as a pattern.
+        assert!(!is_ignored(&matcher, "# a comment"));
+        assert!(!is_ignored(&matcher, "1"));
+    }
+
+    #[test]
+    fn ignore_file_is_self_excluded_even_when_empty() {
+        let matcher = matcher_from("");
+        assert!(is_ignored(&matcher, IGNORE_FILE_NAME));
+    }
+
+    #[test]
+    fn missing_ignore_file_excludes_nothing_but_itself() {
+        let temp = assert_fs::TempDir::new().unwrap();
+        let directory = Directory::new(temp.path()).unwrap();
+        let matcher = directory.load_ignore_matcher().unwrap();
+        assert!(is_ignored(&matcher, IGNORE_FILE_NAME));
+        assert!(!is_ignored(&matcher, "a/1"));
+        assert!(!is_ignored(&matcher, "c"));
     }
 }

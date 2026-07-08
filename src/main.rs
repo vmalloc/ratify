@@ -54,6 +54,11 @@ struct TestParams {
     #[clap(long)]
     catalog_file: Option<PathBuf>,
 
+    /// only verify that cataloged files exist, without reading/hashing their
+    /// contents (useful for quickly finding missing or new files)
+    #[clap(long)]
+    existence_only: bool,
+
     #[clap(default_value = ".")]
     path: PathBuf,
 }
@@ -141,12 +146,22 @@ fn load_and_verify_catalog(
     directory: catalog::Directory,
     algo_param: Option<Algorithm>,
     path_param: &PathBuf,
+    existence_only: bool,
 ) -> anyhow::Result<Verification> {
     let iterator = walkdir::WalkDir::new(directory.path());
+    let ignore_matcher = directory.load_ignore_matcher()?;
+    let root_path = directory.path().to_owned();
+
+    let walk_matcher = ignore_matcher.clone();
+    let walk_root = root_path.clone();
     let all_paths_thread = std::thread::spawn(move || {
         iterator
             .into_iter()
             .filter_ok(|entry| !entry.path().is_dir())
+            .filter_ok(move |entry| match pathdiff::diff_paths(entry.path(), &walk_root) {
+                Some(relpath) => !catalog::is_ignored(&walk_matcher, &relpath.to_string_lossy()),
+                None => true,
+            })
             .map(|entry| {
                 entry
                     .context("Failed reading directory")
@@ -159,12 +174,66 @@ fn load_and_verify_catalog(
     let catalog_filename = catalog.metadata().signature_file_path().clone();
     let algo = catalog.metadata().algo();
 
-    let bar = crate::progress::ProgressBar::new_with_description(Some(catalog.len()), "Verifying");
+    // Partition out any catalog entries that now match a .ratify-ignore rule.
+    // These were signed before the rule was added; skipping them (with a
+    // warning) keeps ignore semantics consistent -- an ignored file is never
+    // verified and never flagged as unknown -- and points the user at
+    // re-signing.
+    let (entries, ignored_entries): (Vec<_>, Vec<_>) =
+        catalog.into_iter().partition(|entry| {
+            let keep = match pathdiff::diff_paths(entry.path(), &root_path) {
+                Some(relpath) => {
+                    let ignored = catalog::is_ignored(&ignore_matcher, &relpath.to_string_lossy());
+                    log::debug!(
+                        "Ignore check: entry={:?} root={:?} relpath={:?} ignored={ignored}",
+                        entry.path(),
+                        root_path,
+                        relpath
+                    );
+                    !ignored
+                }
+                None => {
+                    log::debug!(
+                        "Ignore check: entry={:?} root={:?} diff_paths returned None; keeping",
+                        entry.path(),
+                        root_path
+                    );
+                    true
+                }
+            };
+            keep
+        });
 
-    let mut report = crate::parallel::for_each(catalog.into_iter(), move |entry| {
-        let res = entry
-            .verify(algo)
-            .inspect_err(|e| log::info!("Failed checksum for {:?}: {e:?}", entry.path()));
+    if !ignored_entries.is_empty() {
+        let mut writer = StandardStream::stderr(termcolor::ColorChoice::Auto);
+        writer.set_color(ColorSpec::new().set_fg(Some(Color::Yellow)))?;
+        for entry in &ignored_entries {
+            writeln!(
+                writer,
+                "Warning: catalog entry {:?} matches a .ratify-ignore rule; skipping it (re-sign to remove it from the catalog)",
+                entry.path()
+            )?;
+        }
+        writer.reset()?;
+    }
+
+    let description = if existence_only {
+        "Checking"
+    } else {
+        "Verifying"
+    };
+    let bar = crate::progress::ProgressBar::new_with_description(Some(entries.len()), description);
+
+    let mut report = crate::parallel::for_each(entries.into_iter(), move |entry| {
+        let res = if existence_only {
+            entry
+                .verify_existence()
+                .inspect_err(|e| log::info!("Failed existence check for {:?}: {e:?}", entry.path()))
+        } else {
+            entry
+                .verify(algo)
+                .inspect_err(|e| log::info!("Failed checksum for {:?}: {e:?}", entry.path()))
+        };
         bar.notify_record_processed(res.as_ref().map(|r| r.processed_size()).ok());
         res
     })
@@ -217,7 +286,9 @@ fn test_catalog(params: TestParams) -> anyhow::Result<()> {
     let start = std::time::Instant::now();
     let directory = catalog::Directory::from_params(&params.path, params.catalog_file)?;
 
-    let report = load_and_verify_catalog(directory, params.algo, &params.path)?.report;
+    let report =
+        load_and_verify_catalog(directory, params.algo, &params.path, params.existence_only)?
+            .report;
 
     let mut report_writer: Box<dyn WriteColor> = if let Some(path) = &params.report_filename {
         log::debug!("Opening report file {path:?} for writing...");
@@ -326,7 +397,7 @@ fn confirm_updates(
 fn update_catalog(params: UpdateParams) -> anyhow::Result<()> {
     let directory = catalog::Directory::from_params(&params.path, params.catalog_file.clone())?;
 
-    let verification = load_and_verify_catalog(directory, params.algo, &params.path)?;
+    let verification = load_and_verify_catalog(directory, params.algo, &params.path, false)?;
     let report = verification.report;
     let algo = verification.algo;
 
