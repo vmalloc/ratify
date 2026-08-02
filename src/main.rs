@@ -2,7 +2,11 @@ use algo::Algorithm;
 use anyhow::Context;
 use clap::{Parser, Subcommand};
 use itertools::Itertools;
-use std::{collections::HashSet, io::Write, path::PathBuf};
+use std::{
+    collections::HashSet,
+    io::Write,
+    path::{Path, PathBuf},
+};
 use strum::{EnumString, IntoEnumIterator};
 use termcolor::{Color, ColorSpec, StandardStream, WriteColor};
 use tracing_subscriber::{filter::LevelFilter, EnvFilter};
@@ -154,25 +158,49 @@ fn checksum_entry(
 ) -> anyhow::Result<(u64, String, Vec<u8>)> {
     let path = dir_entry.path();
 
-    log::debug!("Checksumming {path:?}...");
+    tracing::debug!("Checksumming {path:?}...");
 
-    let (size, hash) = algo
+    let result = algo
         .hash_file(path)
         .with_context(|| format!("Failed hashing {path:?}"))?;
 
-    log::debug!("Checksumming {path:?} complete: {hash:?}");
-    Ok((size, relative_filename, hash))
+    tracing::debug!("Checksumming {path:?} complete: {:?}", result.hash);
+    Ok((result.size, relative_filename, result.hash))
 }
 
 struct Verification {
     report: reporting::VerificationReport,
-    algo: Algorithm,
+    catalog: catalog::Catalog,
+}
+
+/// Whether a cataloged entry should still be considered part of the catalog,
+/// or has since been excluded by a `.ratify-ignore` rule.
+fn should_keep_entry(
+    entry_path: &Path,
+    root_path: &Path,
+    ignore_matcher: &ignore::gitignore::Gitignore,
+) -> bool {
+    match pathdiff::diff_paths(entry_path, root_path) {
+        Some(relpath) => {
+            let ignored = catalog::is_ignored(ignore_matcher, &relpath.to_string_lossy());
+            tracing::debug!(
+                "Ignore check: entry={entry_path:?} root={root_path:?} relpath={relpath:?} ignored={ignored}"
+            );
+            !ignored
+        }
+        None => {
+            tracing::debug!(
+                "Ignore check: entry={entry_path:?} root={root_path:?} diff_paths returned None; keeping"
+            );
+            true
+        }
+    }
 }
 
 fn load_and_verify_catalog(
     directory: catalog::Directory,
     algo_param: Option<Algorithm>,
-    path_param: &PathBuf,
+    path_param: &Path,
     existence_only: bool,
 ) -> anyhow::Result<Verification> {
     let iterator = walkdir::WalkDir::new(directory.path());
@@ -206,30 +234,9 @@ fn load_and_verify_catalog(
     // warning) keeps ignore semantics consistent -- an ignored file is never
     // verified and never flagged as unknown -- and points the user at
     // re-signing.
-    let (entries, ignored_entries): (Vec<_>, Vec<_>) =
-        catalog.into_iter().partition(|entry| {
-            let keep = match pathdiff::diff_paths(entry.path(), &root_path) {
-                Some(relpath) => {
-                    let ignored = catalog::is_ignored(&ignore_matcher, &relpath.to_string_lossy());
-                    log::debug!(
-                        "Ignore check: entry={:?} root={:?} relpath={:?} ignored={ignored}",
-                        entry.path(),
-                        root_path,
-                        relpath
-                    );
-                    !ignored
-                }
-                None => {
-                    log::debug!(
-                        "Ignore check: entry={:?} root={:?} diff_paths returned None; keeping",
-                        entry.path(),
-                        root_path
-                    );
-                    true
-                }
-            };
-            keep
-        });
+    let (entries, ignored_entries): (Vec<_>, Vec<_>) = catalog
+        .iter_entries()
+        .partition(|entry| should_keep_entry(entry.path(), &root_path, &ignore_matcher));
 
     if !ignored_entries.is_empty() {
         let mut writer = StandardStream::stderr(termcolor::ColorChoice::Auto);
@@ -253,13 +260,13 @@ fn load_and_verify_catalog(
 
     let mut report = crate::parallel::for_each(entries.into_iter(), move |entry| {
         let res = if existence_only {
-            entry
-                .verify_existence()
-                .inspect_err(|e| log::info!("Failed existence check for {:?}: {e:?}", entry.path()))
+            entry.verify_existence().inspect_err(|e| {
+                tracing::info!("Failed existence check for {:?}: {e:?}", entry.path())
+            })
         } else {
             entry
                 .verify(algo)
-                .inspect_err(|e| log::info!("Failed checksum for {:?}: {e:?}", entry.path()))
+                .inspect_err(|e| tracing::info!("Failed checksum for {:?}: {e:?}", entry.path()))
         };
         bar.notify_record_processed(res.as_ref().map(|r| r.processed_size()).ok());
         res
@@ -275,7 +282,7 @@ fn load_and_verify_catalog(
     all_paths.remove(&path_param.try_canonicalize()?);
     report.update_unknown(all_paths);
 
-    Ok(Verification { report, algo })
+    Ok(Verification { report, catalog })
 }
 
 fn create_catalog(params: SignParams, config: &config::Config) -> anyhow::Result<()> {
@@ -318,7 +325,7 @@ fn test_catalog(params: TestParams) -> anyhow::Result<()> {
             .report;
 
     let mut report_writer: Box<dyn WriteColor> = if let Some(path) = &params.report_filename {
-        log::debug!("Opening report file {path:?} for writing...");
+        tracing::debug!("Opening report file {path:?} for writing...");
         Box::new(termcolor::NoColor::new(
             std::fs::OpenOptions::new()
                 .create_new(true)
@@ -421,28 +428,67 @@ fn confirm_updates(
     Ok(key == 'y')
 }
 
+/// Prints `msg` in `color` (bold when `intense`), then resets. Collapses the
+/// repeated `set_color` -> `println!` -> `reset` ceremony used throughout the
+/// interactive update/append flows.
+fn print_colored(
+    writer: &mut dyn WriteColor,
+    color: Color,
+    intense: bool,
+    msg: &str,
+) -> anyhow::Result<()> {
+    writer.set_color(ColorSpec::new().set_fg(Some(color)).set_intense(intense))?;
+    println!("{msg}");
+    writer.reset()?;
+    Ok(())
+}
+
+/// Hashes (or, if missing, removes) each of `paths` in the catalog and writes
+/// it back to disk. `verb` labels the per-file success message (e.g.
+/// "Updated" or "Added"); a path that's gone missing is always reported as
+/// "Removed" regardless of `verb`.
+fn apply_entries(
+    catalog: &mut catalog::Catalog,
+    algo: Algorithm,
+    paths: &HashSet<&Path>,
+    verb: &str,
+    writer: &mut dyn WriteColor,
+) -> anyhow::Result<()> {
+    for path in paths {
+        let relative_path = pathdiff::diff_paths(path, catalog.directory().path())
+            .ok_or_else(|| anyhow::format_err!("Unable to get relative path for {:?}", path))?;
+
+        if path.exists() {
+            let result = algo
+                .hash_file(path)
+                .with_context(|| format!("Failed hashing {path:?}"))?;
+            catalog.update_entry(&relative_path.to_string_lossy(), result.hash);
+            print_colored(writer, Color::Green, false, &format!("{verb}: {path:?}"))?;
+        } else {
+            catalog.remove_entry(&relative_path.to_string_lossy());
+            print_colored(writer, Color::Red, false, &format!("Removed: {path:?}"))?;
+        }
+    }
+
+    catalog.write_signature_file(true)?;
+    print_colored(writer, Color::Green, true, "Catalog updated successfully.")
+}
+
 fn update_catalog(params: UpdateParams) -> anyhow::Result<()> {
     let directory = catalog::Directory::from_params(&params.path, params.catalog_file.clone())?;
 
     let verification = load_and_verify_catalog(directory, params.algo, &params.path, false)?;
     let report = verification.report;
-    let algo = verification.algo;
+    let mut catalog = verification.catalog;
+    let algo = catalog.metadata().algo();
 
     let mut writer = StandardStream::stderr(termcolor::ColorChoice::Auto);
 
     let mut files_to_update = HashSet::new();
 
-    let dominated_status = |status: &reporting::EntryStatus| -> bool {
-        if params.new_only {
-            matches!(status, reporting::EntryStatus::Unknown)
-        } else {
-            !matches!(status, reporting::EntryStatus::Ok)
-        }
-    };
-
     if params.yes {
         for entry in report.entries() {
-            if dominated_status(entry.status()) {
+            if entry.status().is_actionable(params.new_only) {
                 files_to_update.insert(entry.path());
             }
         }
@@ -450,7 +496,7 @@ fn update_catalog(params: UpdateParams) -> anyhow::Result<()> {
         let mut processed_directories = HashSet::new();
 
         for entry in report.entries() {
-            if !dominated_status(entry.status()) {
+            if !entry.status().is_actionable(params.new_only) {
                 continue;
             }
 
@@ -467,19 +513,18 @@ fn update_catalog(params: UpdateParams) -> anyhow::Result<()> {
 
             match entry.status() {
                 reporting::EntryStatus::VerificationError => {
-                    writer.set_color(ColorSpec::new().set_fg(Some(Color::Red)))?;
-                    println!("  Status: Checksum mismatch");
-                    writer.reset()?;
+                    print_colored(
+                        &mut writer,
+                        Color::Red,
+                        false,
+                        "  Status: Checksum mismatch",
+                    )?;
                 }
                 reporting::EntryStatus::Missing => {
-                    writer.set_color(ColorSpec::new().set_fg(Some(Color::Red)))?;
-                    println!("  Status: File missing");
-                    writer.reset()?;
+                    print_colored(&mut writer, Color::Red, false, "  Status: File missing")?;
                 }
                 reporting::EntryStatus::Unknown => {
-                    writer.set_color(ColorSpec::new().set_fg(Some(Color::Yellow)))?;
-                    println!("  Status: Unknown file");
-                    writer.reset()?;
+                    print_colored(&mut writer, Color::Yellow, false, "  Status: Unknown file")?;
                 }
                 reporting::EntryStatus::Ok => unreachable!(),
             }
@@ -499,7 +544,7 @@ fn update_catalog(params: UpdateParams) -> anyhow::Result<()> {
                     }
 
                     for other_entry in report.entries() {
-                        if !dominated_status(other_entry.status()) {
+                        if !other_entry.status().is_actionable(params.new_only) {
                             continue;
                         }
 
@@ -510,7 +555,7 @@ fn update_catalog(params: UpdateParams) -> anyhow::Result<()> {
                 }
                 UpdateAction::UpdateAll => {
                     for e in report.entries() {
-                        if dominated_status(e.status()) {
+                        if e.status().is_actionable(params.new_only) {
                             files_to_update.insert(e.path());
                         }
                     }
@@ -522,45 +567,12 @@ fn update_catalog(params: UpdateParams) -> anyhow::Result<()> {
 
     if !params.yes && !confirm_updates(&files_to_update, &mut writer)? {
         if !files_to_update.is_empty() {
-            writer.set_color(ColorSpec::new().set_fg(Some(Color::Yellow)))?;
-            println!("Update cancelled.");
-            writer.reset()?;
+            print_colored(&mut writer, Color::Yellow, false, "Update cancelled.")?;
         }
         return Ok(());
     }
 
-    let directory_for_update = catalog::Directory::from_params(&params.path, params.catalog_file)?;
-    let mut catalog = directory_for_update.load(params.algo)?;
-
-    for path in &files_to_update {
-        let relative_path = pathdiff::diff_paths(path, catalog.directory().path())
-            .ok_or_else(|| anyhow::format_err!("Unable to get relative path for {:?}", path))?;
-
-        if path.exists() {
-            let (_, new_hash) = algo
-                .hash_file(path)
-                .with_context(|| format!("Failed hashing {path:?}"))?;
-            catalog.update_entry(&relative_path.to_string_lossy(), new_hash);
-            writer.set_color(ColorSpec::new().set_fg(Some(Color::Green)))?;
-            println!("Updated: {path:?}");
-            writer.reset()?;
-        } else {
-            catalog.remove_entry(&relative_path.to_string_lossy());
-            writer.set_color(ColorSpec::new().set_fg(Some(Color::Red)))?;
-            println!("Removed: {path:?}");
-            writer.reset()?;
-        }
-    }
-
-    catalog.write_signature_file(true)?;
-    writer.set_color(
-        ColorSpec::new()
-            .set_fg(Some(Color::Green))
-            .set_intense(true),
-    )?;
-    println!("Catalog updated successfully.");
-    writer.reset()?;
-    Ok(())
+    apply_entries(&mut catalog, algo, &files_to_update, "Updated", &mut writer)
 }
 
 fn append_catalog(params: AppendParams) -> anyhow::Result<()> {
@@ -568,7 +580,8 @@ fn append_catalog(params: AppendParams) -> anyhow::Result<()> {
 
     let verification = load_and_verify_catalog(directory, params.algo, &params.path, false)?;
     let report = verification.report;
-    let algo = verification.algo;
+    let mut catalog = verification.catalog;
+    let algo = catalog.metadata().algo();
 
     let mut writer = StandardStream::stderr(termcolor::ColorChoice::Auto);
 
@@ -581,38 +594,12 @@ fn append_catalog(params: AppendParams) -> anyhow::Result<()> {
 
     if !params.yes && !confirm_updates(&files_to_add, &mut writer)? {
         if !files_to_add.is_empty() {
-            writer.set_color(ColorSpec::new().set_fg(Some(Color::Yellow)))?;
-            println!("Append cancelled.");
-            writer.reset()?;
+            print_colored(&mut writer, Color::Yellow, false, "Append cancelled.")?;
         }
         return Ok(());
     }
 
-    let directory_for_update = catalog::Directory::from_params(&params.path, params.catalog_file)?;
-    let mut catalog = directory_for_update.load(params.algo)?;
-
-    for path in &files_to_add {
-        let relative_path = pathdiff::diff_paths(path, catalog.directory().path())
-            .ok_or_else(|| anyhow::format_err!("Unable to get relative path for {:?}", path))?;
-
-        let (_, new_hash) = algo
-            .hash_file(path)
-            .with_context(|| format!("Failed hashing {path:?}"))?;
-        catalog.update_entry(&relative_path.to_string_lossy(), new_hash);
-        writer.set_color(ColorSpec::new().set_fg(Some(Color::Green)))?;
-        println!("Added: {path:?}");
-        writer.reset()?;
-    }
-
-    catalog.write_signature_file(true)?;
-    writer.set_color(
-        ColorSpec::new()
-            .set_fg(Some(Color::Green))
-            .set_intense(true),
-    )?;
-    println!("Catalog updated successfully.");
-    writer.reset()?;
-    Ok(())
+    apply_entries(&mut catalog, algo, &files_to_add, "Added", &mut writer)
 }
 
 fn main() {

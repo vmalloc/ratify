@@ -1,7 +1,7 @@
 use anyhow::Context;
 use itertools::Itertools;
 use std::{
-    collections::BTreeMap,
+    collections::{BTreeMap, HashSet},
     io::{BufRead, Write},
     path::{Path, PathBuf},
     sync::Arc,
@@ -99,7 +99,7 @@ impl Directory {
             anyhow::bail!("Failed to detect signature file");
         };
 
-        log::debug!("Opening signature file {filename:?}...");
+        tracing::debug!("Opening signature file {filename:?}...");
         let file = std::io::BufReader::new(
             std::fs::File::open(filename.as_path())
                 .with_context(|| format!("Failed opening {:?}", filename))?,
@@ -243,8 +243,7 @@ impl Catalog {
         &mut self,
         progress_bar: Option<crate::progress::ProgressBar>,
     ) -> anyhow::Result<()> {
-        let mut new_entries = BTreeMap::new();
-        let mut old_entries = Arc::new(std::mem::take(&mut self.entries));
+        let existing_relpaths: HashSet<String> = self.entries.keys().cloned().collect();
 
         let ignore_matcher = self.directory.load_ignore_matcher()?;
 
@@ -277,10 +276,7 @@ impl Catalog {
                 let ignore_matcher = ignore_matcher.clone();
                 move |(_, relpath)| !is_ignored(&ignore_matcher, relpath)
             })
-            .filter_ok({
-                let old_entries = old_entries.clone();
-                move |(_, relpath)| !old_entries.contains_key(relpath)
-            });
+            .filter_ok(move |(_, relpath)| !existing_relpaths.contains(relpath));
         let metadata = self.metadata.clone();
 
         let results_iter = if let Some(ref bar) = progress_bar {
@@ -320,19 +316,8 @@ impl Catalog {
 
         for result in results_iter {
             let (_, relative_filename, signature) = result?;
-            let prev = new_entries.insert(relative_filename, signature);
+            let prev = self.entries.insert(relative_filename, signature);
             assert!(prev.is_none(), "Entry was already in catalog!")
-        }
-
-        assert!(self.entries.is_empty());
-        assert_eq!(Arc::strong_count(&old_entries), 1);
-        std::mem::swap(Arc::make_mut(&mut old_entries), &mut self.entries);
-        // now self.entries is back to what it used to be
-
-        if self.entries.is_empty() {
-            std::mem::swap(&mut self.entries, &mut new_entries);
-        } else {
-            self.entries.extend(new_entries);
         }
 
         Ok(())
@@ -370,7 +355,7 @@ pub struct Entry {
 
 impl Entry {
     pub(crate) fn verify(&self, algo: Algorithm) -> anyhow::Result<crate::reporting::ReportEntry> {
-        let (size, hash) = match algo
+        let result = match algo
             .hash_file(self.path.as_path())
             .with_context(|| format!("Failed hashing {:?}", self.path))
         {
@@ -378,7 +363,7 @@ impl Entry {
             Err(e) => {
                 if let Some(e) = e.downcast_ref::<std::io::Error>() {
                     if e.kind() == std::io::ErrorKind::NotFound {
-                        log::info!("{:?} is missing!", self.path);
+                        tracing::info!("{:?} is missing!", self.path);
                         return Ok(crate::reporting::ReportEntry::new(
                             self.path.clone(),
                             0,
@@ -392,8 +377,8 @@ impl Entry {
 
         Ok(crate::reporting::ReportEntry::new(
             self.path.clone(),
-            size,
-            if hash == self.hash {
+            result.size,
+            if result.hash == self.hash {
                 EntryStatus::Ok
             } else {
                 EntryStatus::VerificationError
@@ -410,11 +395,11 @@ impl Entry {
         let status = match std::fs::metadata(self.path.as_path()) {
             Ok(metadata) if metadata.is_file() => EntryStatus::Ok,
             Ok(_) => {
-                log::info!("{:?} exists but is not a regular file!", self.path);
+                tracing::info!("{:?} exists but is not a regular file!", self.path);
                 EntryStatus::Missing
             }
             Err(e) if e.kind() == std::io::ErrorKind::NotFound => {
-                log::info!("{:?} is missing!", self.path);
+                tracing::info!("{:?} is missing!", self.path);
                 EntryStatus::Missing
             }
             Err(e) => {
@@ -453,19 +438,14 @@ impl Catalog {
         &self.directory
     }
 
-}
-
-impl IntoIterator for Catalog {
-    type Item = Entry;
-    type IntoIter = Box<dyn Iterator<Item = Entry> + Send>;
-
-    fn into_iter(self) -> Self::IntoIter {
-        let root_path = self.directory.path;
-
-        Box::new(self.entries.into_iter().map(move |(subpath, hash)| Entry {
-            path: Arc::new(root_path.as_path().join(subpath).assume_canonical()),
-            hash,
-        }))
+    /// Iterates over entries by reference, leaving the catalog intact so it
+    /// can still be mutated and written back afterwards.
+    pub(crate) fn iter_entries(&self) -> impl Iterator<Item = Entry> + '_ {
+        let root_path = self.directory.path();
+        self.entries.iter().map(move |(subpath, hash)| Entry {
+            path: Arc::new(root_path.join(subpath).assume_canonical()),
+            hash: hash.clone(),
+        })
     }
 }
 

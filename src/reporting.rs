@@ -26,6 +26,17 @@ impl EntryStatus {
             Self::Unknown => "UNKN",
         }
     }
+
+    /// Whether an entry with this status should be offered for update.
+    /// When `new_only` is set, only newly-discovered (unknown) files qualify;
+    /// otherwise anything but a clean verification qualifies.
+    pub fn is_actionable(&self, new_only: bool) -> bool {
+        if new_only {
+            matches!(self, Self::Unknown)
+        } else {
+            !matches!(self, Self::Ok)
+        }
+    }
 }
 
 pub struct ReportEntry {
@@ -231,7 +242,7 @@ impl VerificationReport {
 
         for path in all_paths {
             self.entries.push(ReportEntry {
-                path: path.into(),
+                path: Arc::new(path),
                 processed_size: 0,
                 status: EntryStatus::Unknown,
             });

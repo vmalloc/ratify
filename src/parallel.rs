@@ -35,7 +35,7 @@ where
                 callback();
             }
             if entries_sender.send(entry).is_err() {
-                log::debug!("Entries sender channel closed. Closing producer");
+                tracing::debug!("Entries sender channel closed. Closing producer");
                 break;
             }
         }
@@ -90,11 +90,10 @@ impl<R> ResultsIterator<R> {
     }
 }
 
-impl<R> Iterator for ResultsIterator<R> {
-    type Item = R;
-
-    fn next(&mut self) -> Option<Self::Item> {
-        // Check if we received the total count
+impl<R> ResultsIterator<R> {
+    /// Polls `total_receiver` once and, if a total just arrived, records it
+    /// and fires the discovery callback.
+    fn try_update_total(&mut self) {
         if self.total.is_none() {
             if let Ok(total) = self.total_receiver.try_recv() {
                 self.total.replace(total);
@@ -103,6 +102,14 @@ impl<R> Iterator for ResultsIterator<R> {
                 }
             }
         }
+    }
+}
+
+impl<R> Iterator for ResultsIterator<R> {
+    type Item = R;
+
+    fn next(&mut self) -> Option<Self::Item> {
+        self.try_update_total();
 
         if let Some(total) = self.total {
             if self.received >= total {
@@ -114,27 +121,12 @@ impl<R> Iterator for ResultsIterator<R> {
         match self.receiver.recv().ok() {
             Some(item) => {
                 self.received += 1;
-                // Check again for total after receiving an item
-                if self.total.is_none() {
-                    if let Ok(total) = self.total_receiver.try_recv() {
-                        self.total.replace(total);
-                        if let Some(callback) = self.on_total_discovered.take() {
-                            callback(total);
-                        }
-                    }
-                }
+                self.try_update_total();
                 Some(item)
             }
             None => {
                 // No more results, but check one last time for total
-                if self.total.is_none() {
-                    if let Ok(total) = self.total_receiver.try_recv() {
-                        self.total.replace(total);
-                        if let Some(callback) = self.on_total_discovered.take() {
-                            callback(total);
-                        }
-                    }
-                }
+                self.try_update_total();
                 None
             }
         }

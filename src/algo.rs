@@ -36,17 +36,17 @@ impl Algorithm {
         let root_dir_name = root.file_name()?.to_string_lossy();
         for variant in Self::iter() {
             let ratify_path = root.join(format!("ratify-catalog.{variant}"));
-            log::debug!("Searching for {ratify_path:?}...");
+            tracing::debug!("Searching for {ratify_path:?}...");
             if ratify_path.exists() {
                 return Some((variant, ratify_path));
             }
             let old_ratify_path = root.join(format!("ratify.{variant}"));
-            log::debug!("Searching for {old_ratify_path:?}...");
+            tracing::debug!("Searching for {old_ratify_path:?}...");
             if old_ratify_path.exists() {
                 return Some((variant, old_ratify_path));
             }
             let legacy_path = root.join(format!("{root_dir_name}.{variant}"));
-            log::debug!("Searching for {legacy_path:?}...");
+            tracing::debug!("Searching for {legacy_path:?}...");
             if legacy_path.exists() {
                 return Some((variant, legacy_path));
             }
@@ -79,13 +79,19 @@ macro_rules! hash_impl {
     };
 }
 
+/// Result of hashing a file: its size in bytes and the computed digest.
+pub struct HashResult {
+    pub size: u64,
+    pub hash: Vec<u8>,
+}
+
 impl Algorithm {
-    pub fn hash_file(&self, p: impl AsRef<Path>) -> anyhow::Result<(u64, Vec<u8>)> {
+    pub fn hash_file(&self, p: impl AsRef<Path>) -> anyhow::Result<HashResult> {
         let path = p.as_ref();
         let mut file =
             std::fs::File::open(path).with_context(|| format!("{path:?}: Failed opening file"))?;
 
-        let (size, data) = hash_impl!(self, &mut file, Blake3, Md5, Sha1, Sha256, Sha512)?;
-        Ok((size, data))
+        let (size, hash) = hash_impl!(self, &mut file, Blake3, Md5, Sha1, Sha256, Sha512)?;
+        Ok(HashResult { size, hash })
     }
 }

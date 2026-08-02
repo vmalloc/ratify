@@ -2,14 +2,8 @@ use std::path::{Path, PathBuf};
 
 use anyhow::Context;
 
-#[derive(PartialEq, Eq, Hash)]
+#[derive(PartialEq, Eq, Hash, Clone)]
 pub(crate) struct CanonicalPath<T>(T);
-
-impl<T: Clone> Clone for CanonicalPath<T> {
-    fn clone(&self) -> Self {
-        Self(self.0.clone())
-    }
-}
 
 impl<T: AsRef<Path> + std::fmt::Debug + Clone> std::fmt::Debug for CanonicalPath<T> {
     fn fmt(&self, f: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
@@ -41,15 +35,28 @@ impl<T: AsRef<Path>> Canonicalizeable for T {
     }
 }
 
+/// Ensures the terminal leaves raw mode even if reading input errors or panics.
+struct RawModeGuard;
+
+impl RawModeGuard {
+    fn enable() -> anyhow::Result<Self> {
+        crossterm::terminal::enable_raw_mode()?;
+        Ok(Self)
+    }
+}
+
+impl Drop for RawModeGuard {
+    fn drop(&mut self) {
+        let _ = crossterm::terminal::disable_raw_mode();
+    }
+}
+
 pub(crate) fn read_single_char() -> anyhow::Result<char> {
-    use crossterm::{
-        event::{self, Event, KeyCode},
-        terminal::{disable_raw_mode, enable_raw_mode},
-    };
+    use crossterm::event::{self, Event, KeyCode};
 
-    enable_raw_mode()?;
+    let _guard = RawModeGuard::enable()?;
 
-    let result = loop {
+    loop {
         match event::read()? {
             Event::Key(key_event) => {
                 let ch = match key_event.code {
@@ -60,8 +67,5 @@ pub(crate) fn read_single_char() -> anyhow::Result<char> {
             }
             _ => continue,
         }
-    };
-
-    disable_raw_mode()?;
-    result
+    }
 }
