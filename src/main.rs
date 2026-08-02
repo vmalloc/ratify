@@ -563,6 +563,58 @@ fn update_catalog(params: UpdateParams) -> anyhow::Result<()> {
     Ok(())
 }
 
+fn append_catalog(params: AppendParams) -> anyhow::Result<()> {
+    let directory = catalog::Directory::from_params(&params.path, params.catalog_file.clone())?;
+
+    let verification = load_and_verify_catalog(directory, params.algo, &params.path, false)?;
+    let report = verification.report;
+    let algo = verification.algo;
+
+    let mut writer = StandardStream::stderr(termcolor::ColorChoice::Auto);
+
+    let files_to_add: HashSet<_> = report
+        .entries()
+        .iter()
+        .filter(|entry| matches!(entry.status(), reporting::EntryStatus::Unknown))
+        .map(|entry| entry.path())
+        .collect();
+
+    if !params.yes && !confirm_updates(&files_to_add, &mut writer)? {
+        if !files_to_add.is_empty() {
+            writer.set_color(ColorSpec::new().set_fg(Some(Color::Yellow)))?;
+            println!("Append cancelled.");
+            writer.reset()?;
+        }
+        return Ok(());
+    }
+
+    let directory_for_update = catalog::Directory::from_params(&params.path, params.catalog_file)?;
+    let mut catalog = directory_for_update.load(params.algo)?;
+
+    for path in &files_to_add {
+        let relative_path = pathdiff::diff_paths(path, catalog.directory().path())
+            .ok_or_else(|| anyhow::format_err!("Unable to get relative path for {:?}", path))?;
+
+        let (_, new_hash) = algo
+            .hash_file(path)
+            .with_context(|| format!("Failed hashing {path:?}"))?;
+        catalog.update_entry(&relative_path.to_string_lossy(), new_hash);
+        writer.set_color(ColorSpec::new().set_fg(Some(Color::Green)))?;
+        println!("Added: {path:?}");
+        writer.reset()?;
+    }
+
+    catalog.write_signature_file(true)?;
+    writer.set_color(
+        ColorSpec::new()
+            .set_fg(Some(Color::Green))
+            .set_intense(true),
+    )?;
+    println!("Catalog updated successfully.");
+    writer.reset()?;
+    Ok(())
+}
+
 fn main() {
     if let Err(e) = entry_point() {
         match e.downcast_ref() {
@@ -605,13 +657,7 @@ fn entry_point() -> anyhow::Result<()> {
 
         Command::Test { params } => test_catalog(params),
         Command::Update { params } => update_catalog(params),
-        Command::Append { params } => update_catalog(UpdateParams {
-            algo: params.algo,
-            catalog_file: params.catalog_file,
-            yes: params.yes,
-            new_only: true,
-            path: params.path,
-        }),
+        Command::Append { params } => append_catalog(params),
         Command::ListAlgos => {
             for algo in Algorithm::iter() {
                 println!("{algo}");
